@@ -1,0 +1,13 @@
+name = "PIPG"
+uuid = "7a7908e2-1dfc-4e7d-9e38-1c9807c3487b"
+authors = ["Ben Chung <ckfinite@gmail.com> and contributors"]
+version = "0.1.0"
+
+[compat]
+julia = "1"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
