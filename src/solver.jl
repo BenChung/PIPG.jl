@@ -15,15 +15,12 @@ struct NOCone{T, D} <: Cone{T, D} end # { x | forall i, x_i <= 0}
 struct SOCone{T, D} <: Cone{T, D} end # { [t,x] | |x| <= t }
 struct NSOCone{T, D} <: Cone{T, D} end # { [t,x] | |x| <= -t }
 
-struct PCone{T, D1, D2, D3, C1 <: Cone{T, D1}, C2 <: Cone{T, D2}} <: Cone{T, D3}
-	c1::C1
-	c2::C2
-	PCone(c1::C1, c2::C2) where {T, D1, D2, C1 <: Cone{T, D1}, C2 <: Cone{T, D2}} = new{T, D1, D2, D1+D2, C1, C2}(c1, c2)
-end
 struct PTCone{T, Cs<:Tuple{Vararg{C where C<:Cone{T}}}, D} <: Cone{T, D}
 	cones::Cs
 	@generated PTCone{T}(cs::Cs) where {T, Cs <: Tuple{Vararg{C where C<:Cone{T}}}} = Expr(:new, PTCone{T, Cs, sum(dim.(Cs.parameters); init=0)}, :(cs))
 end
+cone_dim(::Cone{T,D}) where {T,D} = D
+cone_dim(::Type{C}) where {T, D, C<:Cone{T,D}} = D
 
 # projections
 project(::Reals{T, D}, x::SVector{D, T}) where {D, T} = x
@@ -67,11 +64,6 @@ end
 	end
 end
 
-@generated function project(c::PCone{T, D1, D2, D3, C1, C2}, x::SVector{D3, T}) where {D1, D2, D3, C1, C2, T}
-	r1 = SVector{D1, Int64}(1:D1)
-	r2 = SVector{D2, Int64}(D1+1:D3)
-	return :(vcat(project(c.c1, x[$r1]), project(c.c2, x[$r2])))
-end
 @generated function project(c::PTCone{T, Cs, D}, x::SVector{D, T}) where {T, Cs, D}
 	if length(Cs.parameters) == 0 || D == 0 return :(SVector{0,T}()) end
 	idxes = prepend!(accumulate(+, dim.(Cs.parameters); init=1), 1)
@@ -94,7 +86,6 @@ polar(::POCone{T,D}) where {T,D} = NOCone{T,D}()
 polar(::NOCone{T,D}) where {T,D} = POCone{T,D}()
 polar(::SOCone{T,D}) where {T,D} = NSOCone{T,D}()
 polar(::NSOCone{T,D}) where {T,D} = SOCone{T,D}()
-polar(c::PCone{T,D1,D2,D3,C1,C2}) where {T,D1,D2,D3,C1,C2} = PCone(polar(c.c1), polar(c.c2)) 
 
 @generated function polar(c::PTCone{T, Cs, D}) where {T, Cs, D} 
 	tup = Expr(:tuple, (:(polar(c.cones[$i])) for i in 1:length(Cs.parameters))...)
@@ -114,6 +105,8 @@ struct Problem{T,N,M,K<:Cone{T,M},D<:Space{T,N}}
 	q::MVector{N, T}
 	g::MVector{M, T}
 	c::T
+	Problem(k::K, d::D, H::SparseMatrixCSC{T, Int}, P::SparseMatrixCSC{T, Int}, q::MVector{N, T}, g::MVector{M, T}, c::T) where {T,N,M,K<:Cone{T,M},D<:Space{T,N}} = 
+		new{T,N,M,K,D}(k,d,transpose(H),P,q,g,c)
 end
 
 abstract type Diagnostics{T} end
@@ -130,24 +123,22 @@ function record_diagnostics(d::LogDiagnostics{T}, i, w, z, v, w_delta, z_delta) 
 end
 
 abstract type Scaling{T, M, N} end
-struct NoScaling{T, M, N} <: Scaling{T, M, N}
-	NoScaling(::Problem{T,N,M}) where {T,M,N} = new{T, M, N}()
-end
 struct GeoMean{T, M, N} <: Scaling{T, M, N}
-	rowmaxes::MVector{M, T}
-	rowmins::MVector{M, T}
-	colscale::MVector{N, T}
-	GeoMean(::Problem{T,N,M}) where {T,M,N} = new{T, M, N}(MVector{M, T}(zeros(T, M)), MVector{M, T}(zeros(T, M)), MVector{N, T}(zeros(T, N)))
+	colmax::MVector{N, T}
+	colmin::MVector{N, T}
+	GeoMean(::Problem{T,N,M}) where {T,M,N} = new{T, M, N}(MVector{N, T}(zeros(T, N)), MVector{N, T}(zeros(T, N)))
 end
 struct ArithMean{T, M, N} <: Scaling{T, M, N}
-	rowsums::MVector{M, T}
-	rowscale::MVector{M, T}
-	colscale::MVector{N, T}
-	ArithMean(::Problem{T,N,M}) where {T,M,N} = new{T, M, N}(MVector{M, T}(zeros(T, M)), MVector{M, T}(zeros(T, M)), MVector{N, T}(zeros(T, N)))
+	colsum::MVector{N, T}
+	ArithMean(::Problem{T,N,M}) where {T,M,N} = new{T, M, N}(MVector{N, T}(zeros(T, N)))
+end
+struct Equilibration{T, M, N} <: Scaling{T, M, N}
+	colmax::MVector{N, T}
+	Equilibration(::Problem{T,N,M}) where {T,M,N} = new{T, M, N}(MVector{N, T}(zeros(T, N)))
 end
 
 @enum SolverState INDEFINITE OPTIMAL PRIMAL_INFEASIBLE DUAL_INFEASIBLE TIMEOUT
-mutable struct State{T,N,M,K,D,P <: Problem{T,N,M,K,D}, G <: Diagnostics{T}, S <: Scaling{T, M, N}}
+mutable struct State{T,N,M,K,D,P <: Problem{T,N,M,K,D}, G <: Diagnostics{T}, SCs <: Tuple{Vararg{<:Scaling{T, M, N}}}}
 	w_i1::MVector{M, T}
 	z_i1::MVector{N, T}
 	z_i2::MVector{N, T}
@@ -161,13 +152,13 @@ mutable struct State{T,N,M,K,D,P <: Problem{T,N,M,K,D}, G <: Diagnostics{T}, S <
 	dual::MVector{M, T} 
 
 	diagnostics::G
-	scaling::S
-	function State(p::P; diag::G = NoDiagnostics{T}(), scaling::S = GeoMean(p)) where {
+	scaling::SCs
+	function State(p::P; diag::G = NoDiagnostics{T}(), scaling::SCs = (GeoMean(p), Equilibration(p))) where {
 			T,N,M,K,D,
 			P<:Problem{T,N,M,K,D}, 
 			G<:Diagnostics{T},
-			S<:Scaling{T, M, N}}
-	return new{T,N,M,K,D,P,G,S}(
+			SCs<:Tuple{Vararg{Scaling{T, M, N}}}}
+	return new{T,N,M,K,D,P,G,SCs}(
 		MVector{M,T}(zeros(T, M)), MVector{N,T}(zeros(T, N)), MVector{N,T}(zeros(T, N)), MVector{M,T}(zeros(T, M)), 
 		MVector{N,T}(ones(T, N)), MVector{M, T}(ones(T, M)),
 		INDEFINITE, MVector{N, T}(zeros(T, N)), MVector{M, T}(zeros(T, M)), diag, scaling)
@@ -176,6 +167,9 @@ end
 
 function objective_value(p::P, s::State{T,N,M,K,D,P}) where {T,N,M,K,D,P<:Problem{T,N,M,K,D}}
 	return transpose(s.primal) * p.P * s.primal * 0.5 + dot(s.primal, p.q)
+end
+function dual_objective_value(p::P, s::State{T,N,M,K,D,P}) where {T,N,M,K,D,P<:Problem{T,N,M,K,D}}
+	return -transpose(s.primal) * p.P * s.primal * 0.5 - dot(s.dual, p.g)
 end
 
 function compute_α(p::P, γ::T) where {T,N,M,K,D,P<:Problem{T,N,M,K,D}}
@@ -213,30 +207,42 @@ function pipg(p::P,s::State{T,N,M,K,D,P,G}, iters::Int, α::T, ϵ::T, z::SVector
 	w = v
 	w_delta = zero(T)
 	z_delta = zero(T)
+	w_prev_delta = zero(T)
+	z_prev_delta = zero(T)
 	niters = 0
 	for i=1:iters
 		w_prev = w
-		# w_raw = v + α*(p.H * z - p.g)
+		# w_raw = v + α*(transpose(p.H) * z - p.g)
 		s.w_i1 .= p.g
-		spmul!(s.w_i1, p.H, z, α, -α)
+		spmul!(s.w_i1, transpose(p.H), z, α, -α)
 		w_raw = v + s.w_i1
 		w = project(polar(p.k), w_raw)
 		z_prev = z
-		# z_raw = z - α*(p.P * z + p.q + transpose(p.H) * w)
+		# z_raw = z - α*(p.P * z + p.q + p.H * w)
 		s.z_i1 .= p.q
 		spmul!(s.z_i1, p.P, z, α, α)
-		spmul!(s.z_i1, transpose(p.H), w, α, 1.0)
+		spmul!(s.z_i1, p.H, w, α, 1.0)
 		z_raw = z - s.z_i1
 		z = project(p.d, z_raw)
-		# v = w + α * p.H * (z - z_prev)
-		spmul!(s.v_i1, p.H, z - z_prev, α, 0.0)
+		# v = w + α * transpose(p.H) * (z - z_prev)
+		spmul!(s.v_i1, transpose(p.H), z - z_prev, α, 0.0)
 		v = w + s.v_i1
 
+		w_prev_delta = w_delta
+		z_prev_delta = z_delta
 		w_delta = norm(w - w_prev)
 		z_delta = norm(z - z_prev)
 		record_diagnostics(s.diagnostics, i, w, z, v, w_delta, z_delta)
 		niters = i
 		if w_delta < ϵ && z_delta < ϵ
+			break
+		end
+		if isnan(w_delta) || isnan(z_delta)
+			# halt iteration with the previous values of w and z
+			w = w_prev
+			z = z_prev
+			w_delta = w_prev_delta
+			z_delta = z_prev_delta
 			break
 		end
 	end
@@ -247,9 +253,11 @@ function pipg(p::P,s::State{T,N,M,K,D,P,G}, iters::Int, α::T, ϵ::T, z::SVector
 		return niters
 	elseif w_delta > ϵ
 		s.solver_state = PRIMAL_INFEASIBLE
+		s.dual .= w ./ norm(w)
 		return niters
 	elseif z_delta > ϵ
 		s.solver_state = DUAL_INFEASIBLE
+		s.primal .= z ./ norm(z)
 		return niters
 	end
 	s.solver_state = TIMEOUT

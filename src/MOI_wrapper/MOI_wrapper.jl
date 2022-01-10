@@ -28,14 +28,15 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
 	sets::Union{Nothing, PIPG.Cones{Float64}}
 	silent::Bool
 	elapsed_time::Float64
+	max_sense::Bool
 
-	scaling::Union{Nothing, Type{S} where S<:PIPG.Scaling} 
+	scaling
 
 	niters::Int
 	ϵ::Float64
 	γ::Float64
-	function Optimizer(; niters=1000000, ϵ=1e-5, γ=0.9)
-		return new("", nothing, nothing, 0.0, nothing, nothing, false, 0.0, nothing, niters, ϵ, γ)
+	function Optimizer(; niters=1000000, ϵ=1e-9, γ=0.9)
+		return new("", nothing, nothing, 0.0, nothing, nothing, false, 0.0, false, nothing, niters, ϵ, γ)
 	end
 end
 
@@ -61,6 +62,8 @@ MOI.get(o::Optimizer, ::MOI.SolverName) = "PIPG"
 MOI.get(o::Optimizer, ::MOI.SolverVersion) = "v0.1.0"
 MOI.get(o::Optimizer, ::MOI.RawSolver) = o.problem
 MOI.get(o::Optimizer, ::MOI.SolveTimeSec) = o.elapsed_time
+
+MOI.supports(::Optimizer, ::MOI.ConstraintBasisStatus) = false
 # supported sets
 MOI.supports(::Optimizer, ::Union{
 		MOI.ObjectiveSense, 
@@ -98,6 +101,7 @@ function build_problem(
     src::MOI.Utilities.UniversalFallback{OptimizerCache{T}}) where {T}
 	Ab = src.model.constraints
 	A = Ab.coefficients
+	dest.cones = Ab.sets
 
 	for (F, S) in keys(src.constraints)
 		throw(MOI.UnsupportedConstraint{F,S}())
@@ -122,9 +126,20 @@ function build_problem(
     	obj = MOI.get(src, quad_objective_function)
         objective_constant += MOI.constant(obj)
 
-        I = Int[Int(term.variable_1.value) for term in obj.quadratic_terms]
-        J = Int[Int(term.variable_2.value) for term in obj.quadratic_terms]
-        V = Float64[(max_sense ? -1 : 1) * term.coefficient for term in obj.quadratic_terms]
+        I = Vector{Int}()
+        J = Vector{Int}()
+        V = Vector{Float64}()
+
+        for term in obj.quadratic_terms
+        	push!(I, Int(term.variable_1.value))
+        	push!(J, Int(term.variable_2.value))
+        	push!(V, (max_sense ? -1 : 1) * term.coefficient)
+        	if (term.variable_1 != term.variable_2) # off-diagonal
+	        	push!(I, Int(term.variable_2.value))
+	        	push!(J, Int(term.variable_1.value))
+	        	push!(V, (max_sense ? -1 : 1) * term.coefficient)
+        	end
+        end
         for term in obj.affine_terms
             q[term.variable.value] += (max_sense ? -1 : 1) * term.coefficient
         end
@@ -161,6 +176,7 @@ function build_problem(
 	else
 		s = State(p) 
 	end
+	dest.max_sense = max_sense
     dest.problem = p
     dest.state = s
     dest.sets = Ab.sets
@@ -183,7 +199,7 @@ function MOI.modify(
 	new_coeiffs = change.new_coefficients
 	rows = MOI.Utilities.rows(d.sets, ci)[getindex.(new_coeiffs, 1)]
 	scale = d.state.row_scale[rows] .* d.state.col_scale[change.variable.value]
-	d.problem.H[rows, change.variable.value] .= scale .* getindex.(new_coeiffs, 2)
+	d.problem.H[change.variable.value, rows] .= scale .* getindex.(new_coeiffs, 2)
 end
 
 # optimizer
@@ -244,13 +260,27 @@ function MOI.get(optimizer::Optimizer, ::MOI.RawStatusString)
     return "" 
 end
 
-function MOI.get(o::Optimizer, attr::Union{MOI.PrimalStatus, MOI.DualStatus})
+function MOI.get(o::Optimizer, attr::MOI.PrimalStatus)
     if attr.result_index > MOI.get(o, MOI.ResultCount())
         return MOI.NO_SOLUTION
     elseif !isnothing(o.state) && o.state.solver_state == OPTIMAL
         return MOI.FEASIBLE_POINT
-    elseif !isnothing(o.state) && (o.state.solver_state == PRIMAL_INFEASIBLE || o.state.solver_state == DUAL_INFEASIBLE)
+    elseif !isnothing(o.state) && o.state.solver_state == PRIMAL_INFEASIBLE
+        return MOI.INFEASIBLE_POINT
+    elseif !isnothing(o.state) && o.state.solver_state == DUAL_INFEASIBLE
         return MOI.INFEASIBILITY_CERTIFICATE
+    end
+    return MOI.NO_SOLUTION
+end
+function MOI.get(o::Optimizer, attr::MOI.DualStatus)
+    if attr.result_index > MOI.get(o, MOI.ResultCount())
+        return MOI.NO_SOLUTION
+    elseif !isnothing(o.state) && o.state.solver_state == OPTIMAL
+        return MOI.FEASIBLE_POINT
+    elseif !isnothing(o.state) && o.state.solver_state == PRIMAL_INFEASIBLE
+        return MOI.INFEASIBILITY_CERTIFICATE
+    elseif !isnothing(o.state) && o.state.solver_state == DUAL_INFEASIBLE
+        return MOI.INFEASIBLE_POINT
     end
     return MOI.NO_SOLUTION
 end
@@ -258,7 +288,14 @@ end
 MOI.get(::Optimizer, ::MOI.ResultCount) = 1
 
 function MOI.get(o::Optimizer, attr::MOI.ObjectiveValue)
-    return objective_value(o.problem, o.state)
+    MOI.check_result_index_bounds(o, attr)
+	raw_value = objective_value(o.problem, o.state)
+    return (o.max_sense ? -1.0 : 1.0) * raw_value + o.problem.c
+end
+
+function MOI.get(o::Optimizer, attr::MOI.DualObjectiveValue)
+    MOI.check_result_index_bounds(o, attr)
+    return (o.max_sense ? -1.0 : 1.0) * dual_objective_value(o.problem, o.state) + o.problem.c
 end
 
 function MOI.get(
@@ -274,5 +311,6 @@ function MOI.get(
 	attr::MOI.ConstraintDual,
 	ci::MOI.ConstraintIndex)
     MOI.check_result_index_bounds(optimizer, attr)
-    return optimizer.state.dual[ci.value] * optimizer.state.row_scale[ci.value]
+    rows = MOI.Utilities.rows(optimizer.cones, ci)
+    return .- optimizer.state.dual[rows] .* optimizer.state.row_scale[rows]
 end

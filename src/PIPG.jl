@@ -2,6 +2,7 @@ module PIPG
 using StaticArrays
 using SparseArrays
 using LinearAlgebra
+using LazyArrays
 
 include("solver.jl")
 include("preconditioning.jl")
