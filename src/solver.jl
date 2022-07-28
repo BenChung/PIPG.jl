@@ -1,13 +1,21 @@
 abstract type Space{T, D} end	
 struct InfNorm{T, D, δ} <: Space{T, D} end
+struct Equality{T, D} <: Space{T, D}
+	v
+end
+struct PTSpace{T, Cs<:Tuple{Vararg{C where C<:Space{T}}}, D} <: Space{T, D}
+	cones::Cs
+	@generated PTSpace{T}(cs::Cs) where {T, Cs <: Tuple{Vararg{C where C<:Space{T}}}} = Expr(:new, PTSpace{T, Cs, sum(dim.(Cs.parameters); init=0)}, :(cs))
+end
+
 struct Product{T, D1, D2, D3, S1 <: Space{T, D1}, S2 <: Space{T, D2}} <: Space{T, D3}
 	s1::S1
 	s2::S2
 	Product(s1::S1, s2::S2) where {T, D1, D2, S1 <: Space{T, D1}, S2 <: Space{T, D2}} = new{T, D1, D2, D1+D2, S1, S2}(s1, s2)
 end
 abstract type Cone{T, D} <: Space{T, D} end
-dim(::Cone{T,D}) where {T,D} = D
-dim(::Type{T}) where {D, Tc, T<:Cone{Tc,D}} = D
+dim(::Space{T,D}) where {T,D} = D
+dim(::Type{T}) where {D, Tc, T<:Space{Tc,D}} = D
 struct Reals{T, D} <: Cone{T, D} end # R^D
 struct Zeros{T, D} <: Cone{T, D} end # 0^D
 struct POCone{T, D} <: Cone{T, D} end # { x | forall i, x_i >= 0}
@@ -26,16 +34,45 @@ cone_dim(::Type{C}) where {T, D, C<:Cone{T,D}} = D
 project(::Reals{T, D}, x::SVector{D, T}) where {D, T} = x
 project(::Zeros{T, D}, x::SVector{D, T}) where {D, T} = zeros(SVector{D})
 project(::InfNorm{T, D, δ}, x::SVector{D, T}) where {D, T, δ} = clamp.(x, -δ, δ)
+project(e::Equality{T, D}, x::SVector{D, T}) where {D, T, δ} = e.v
 
-
+project!(t, i, ::Reals{T, D}, x::StaticVector{D, T}) where {D, T} = @inbounds (t[i:i+D-1] .= x)
+project!(t, i, ::Zeros{T, D}, x::StaticVector{D, T}) where {D, T} = @inbounds (t[i:i+D-1] .= zeros(SVector{D}))
+project!(t, i, ::InfNorm{T, D, δ}, x::StaticVector{D, T}) where {D, T, δ} = @inbounds (t[i:i+D-1] .= clamp.(x, -δ, δ))
+project!(t, i, c::POCone{T, D}, x::StaticVector{D, T}) where {D, T} = for ind=0:D-1 @inbounds t[i+ind] = max(x[ind+1], zero(T)) end
+function project!(t, i, e::Equality{T, D}, x::SVector{D, T}) where {D, T, δ} 
+	t[i:i+D-1] .= e.v
+end
 function project(c::POCone{T, D}, x::SVector{D, T}) where {D, T}
 	return max.(x, zero(T))
 end
 
+project!(t, i, c::NOCone{T, D}, x::StaticVector{D, T}) where {D, T} = @inbounds (t[i:i+D-1] .= min.(x, zero(T)))
 function project(c::NOCone{T, D}, x::SVector{D, T}) where {D, T}
 	return min.(x, zero(T))
 end
-
+@generated function project!(t, i, c::SOCone{T, D}, x::StaticVector{D, T}) where {T, D}
+	onev = one(T)
+	two = 2*onev
+	zv = zeros(SVector{D,T})
+	z = zero(T)
+	vect_inds = SVector{D-1}(2:D)
+	return quote
+		portion = x[$vect_inds]
+		xnorm = norm(x[$vect_inds])
+		r = x[1]
+		if xnorm <= r
+			@inbounds (t[i:i+$D-1]) .= x
+		elseif xnorm <= -r
+			@inbounds (t[i:i+$D-1]) .= $z
+		else 
+			scalefact = (xnorm + r)/($two)
+			component_factor = (scalefact)/xnorm
+			@inbounds t[i] = scalefact
+			@inbounds (t[i+1:i+$D-1] .= component_factor .* x[$vect_inds])
+		end
+	end
+end
 @generated function project(c::SOCone{T, D}, x::SVector{D, T}) where {T, D}
 	onev = one(T)
 	two = 2*onev
@@ -56,6 +93,13 @@ end
 	end
 end
 
+@generated function project!(t, i, c::NSOCone{T, D}, x::StaticVector{D, T}) where {T, D}
+	vect_inds = SVector{D-1}(2:D)
+	return quote 
+		project!(t, i, SOCone{T,D}(), vcat(-x[1], x[$vect_inds]))
+		@inbounds t[i] *= -1.0
+	end
+end
 @generated function project(c::NSOCone{T, D}, x::SVector{D, T}) where {T, D}
 	vect_inds = SVector{D-1}(2:D)
 	return quote 
@@ -64,7 +108,18 @@ end
 	end
 end
 
-@generated function project(c::PTCone{T, Cs, D}, x::SVector{D, T}) where {T, Cs, D}
+@generated function project!(t, i, c::Union{PTCone{T, Cs, D}, PTSpace{T, Cs, D}}, x::StaticVector{D, T}) where {T, Cs, D}
+	if length(Cs.parameters) == 0 || D == 0 return :(return) end
+	idxes = prepend!(accumulate(+, dim.(Cs.parameters); init=1), 1)
+	ranges = map(x->UnitRange(x...), zip(idxes, Iterators.drop(idxes, 1) .- 1))
+	out = :(begin end)
+	for (ind, offs) in enumerate(idxes[1:end-1])
+		offs -= 1
+		push!(out.args, :(project!(t, i+$offs, c.cones[$ind], x[SVector{$(dim(Cs.parameters[ind])), Int64}($(ranges[ind]))])))
+	end
+	return out
+end
+@generated function project(c::Union{PTCone{T, Cs, D}, PTSpace{T, Cs, D}}, x::SVector{D, T}) where {T, Cs, D}
 	if length(Cs.parameters) == 0 || D == 0 return :(SVector{0,T}()) end
 	idxes = prepend!(accumulate(+, dim.(Cs.parameters); init=1), 1)
 	ranges = map(x->UnitRange(x...), zip(idxes, Iterators.drop(idxes, 1) .- 1))
@@ -117,7 +172,7 @@ function record_diagnostics(d::LogDiagnostics{T}, i, w, z, v, w_delta, z_delta) 
 	if i == 1
 		println("iteration | w | w_delta | z | z_delta")
 	end
-	if i % 10000 == 0
+	if i % 500 == 0
 		println("$i | $w | $w_delta | $z | $z_delta")
 	end
 end
@@ -144,6 +199,9 @@ mutable struct State{T,N,M,K,D,P <: Problem{T,N,M,K,D}, G <: Diagnostics{T}, SCs
 	z_i2::MVector{N, T}
 	v_i1::MVector{M, T}
 
+	w_work::MVector{M, T}
+	z_work::MVector{N, T}
+
 	col_scale::MVector{N, T}
 	row_scale::MVector{M, T}
 	
@@ -160,6 +218,7 @@ mutable struct State{T,N,M,K,D,P <: Problem{T,N,M,K,D}, G <: Diagnostics{T}, SCs
 			SCs<:Tuple{Vararg{Scaling{T, M, N}}}}
 	return new{T,N,M,K,D,P,G,SCs}(
 		MVector{M,T}(zeros(T, M)), MVector{N,T}(zeros(T, N)), MVector{N,T}(zeros(T, N)), MVector{M,T}(zeros(T, M)), 
+		MVector{M,T}(zeros(T, M)), MVector{N,T}(zeros(T, N)),
 		MVector{N,T}(ones(T, N)), MVector{M, T}(ones(T, M)),
 		INDEFINITE, MVector{N, T}(zeros(T, N)), MVector{M, T}(zeros(T, M)), diag, scaling)
 	end
@@ -178,7 +237,7 @@ function compute_α(p::P, γ::T) where {T,N,M,K,D,P<:Problem{T,N,M,K,D}}
 	return (8.0-4.0/γ)/(sqrt(λ^2 + 16*ν^2) + λ)
 end
 
-function spmul!(res::MVector{N,T}, A::SparseMatrixCSC{T, Int}, B::SVector{M,T}, α::T, β::T) where {T<:Number,N,M}
+function spmul!(res::MVector{N,T}, A::SparseMatrixCSC{T, Int}, B::StaticVector{M,T}, α::T, β::T) where {T<:Number,N,M}
 	@assert N == A.m
 	@assert M == A.n
 	res .*= β
@@ -189,7 +248,7 @@ function spmul!(res::MVector{N,T}, A::SparseMatrixCSC{T, Int}, B::SVector{M,T}, 
 		end
 	end
 end
-function spmul!(res::MVector{N,T}, At::Transpose{T, SparseMatrixCSC{T, Int}}, B::SVector{M,T}, α::T, β::T) where {T<:Number,N,M}
+function spmul!(res::MVector{N,T}, At::Transpose{T, SparseMatrixCSC{T, Int}}, B::StaticVector{M,T}, α::T, β::T) where {T<:Number,N,M}
 	A = At.parent
 	@assert N == A.n 
 	@assert M == A.m
@@ -203,7 +262,7 @@ function spmul!(res::MVector{N,T}, At::Transpose{T, SparseMatrixCSC{T, Int}}, B:
 	end
 end
 
-function pipg(p::P,s::State{T,N,M,K,D,P,G}, iters::Int, α::T, ϵ::T, z::SVector{N,T}, v::SVector{M,T}) where {T,N,M,K,D,P<:Problem{T,N,M,K,D}, G<:Diagnostics{T}}
+function pipg_basic(p::P,s::State{T,N,M,K,D,P,G}, iters::Int, α::T, ϵ::T, z::SVector{N,T}, v::SVector{M,T}) where {T,N,M,K,D,P<:Problem{T,N,M,K,D}, G<:Diagnostics{T}}
 	w = v
 	w_delta = zero(T)
 	z_delta = zero(T)
@@ -212,29 +271,31 @@ function pipg(p::P,s::State{T,N,M,K,D,P,G}, iters::Int, α::T, ϵ::T, z::SVector
 	niters = 0
 	for i=1:iters
 		w_prev = w
-		# w_raw = v + α*(transpose(p.H) * z - p.g)
-		s.w_i1 .= p.g
-		spmul!(s.w_i1, transpose(p.H), z, α, -α)
-		w_raw = v + s.w_i1
+		w_raw = v + α*(transpose(p.H) * z - p.g)
 		w = project(polar(p.k), w_raw)
 		z_prev = z
-		# z_raw = z - α*(p.P * z + p.q + p.H * w)
-		s.z_i1 .= p.q
-		spmul!(s.z_i1, p.P, z, α, α)
-		spmul!(s.z_i1, p.H, w, α, 1.0)
-		z_raw = z - s.z_i1
+		z_raw = z - α*(p.P * z + p.q + p.H * w)
 		z = project(p.d, z_raw)
-		# v = w + α * transpose(p.H) * (z - z_prev)
-		spmul!(s.v_i1, transpose(p.H), z - z_prev, α, 0.0)
-		v = w + s.v_i1
+		v = w + α * transpose(p.H) * (z - z_prev)
+
+		println("iter: $i")
+		println("z: ")
+		println(z)
+		println("z_init: ")
+		println(z_prev)
+		println("w: ")
+		println(w)
+		println("w_init: ")
+		println(w_prev)
 
 		w_prev_delta = w_delta
 		z_prev_delta = z_delta
-		w_delta = norm(w - w_prev)
-		z_delta = norm(z - z_prev)
-		record_diagnostics(s.diagnostics, i, w, z, v, w_delta, z_delta)
+		w_delta = norm(w .- w_prev)
+		z_delta = norm(z .- z_prev)
 		niters = i
 		if w_delta < ϵ && z_delta < ϵ
+			w = w_prev
+			z = z_prev
 			break
 		end
 		if isnan(w_delta) || isnan(z_delta)
@@ -258,6 +319,72 @@ function pipg(p::P,s::State{T,N,M,K,D,P,G}, iters::Int, α::T, ϵ::T, z::SVector
 	elseif z_delta > ϵ
 		s.solver_state = DUAL_INFEASIBLE
 		s.primal .= z ./ norm(z)
+		return niters
+	end
+	s.solver_state = TIMEOUT
+	s.primal .= z
+	return niters
+end
+
+function pipg(p::P,s::State{T,N,M,K,D,P,G}, iters::Int, α::T, ϵ::T, z_init::SVector{N,T}, v_init::SVector{M,T}) where {T,N,M,K,D,P<:Problem{T,N,M,K,D}, G<:Diagnostics{T}}
+	s.w_work .= v_init
+	s.z_work .= z_init
+	v = v_init
+	w_delta = zero(T)
+	z_delta = zero(T)
+	w_prev_delta = zero(T)
+	z_prev_delta = zero(T)
+	niters = 0
+	for i=1:iters
+		w_prev = SVector(s.w_work)
+		# w_raw = v + α*(transpose(p.H) * z - p.g)
+		s.w_i1 .= p.g
+		spmul!(s.w_i1, transpose(p.H), s.z_work, α, -α)
+		w_raw = v + s.w_i1
+		project!(s.w_work, 1, polar(p.k), w_raw)
+		z_prev = SVector(s.z_work)
+		# z_raw = z - α*(p.P * z + p.q + p.H * w)
+		s.z_i1 .= p.q
+		spmul!(s.z_i1, p.P, s.z_work, α, α)
+		spmul!(s.z_i1, p.H, s.w_work, α, 1.0)
+		z_raw = z_prev - SVector(s.z_i1)
+		project!(s.z_work, 1, p.d, z_raw)
+		# v = w + α * transpose(p.H) * (z - z_prev)
+		spmul!(s.v_i1, transpose(p.H), SVector(s.z_work) - z_prev, α, 0.0)
+		v = SVector(s.w_work) + s.v_i1
+
+		w_prev_delta = w_delta
+		z_prev_delta = z_delta
+		w_delta = norm(s.w_work .- w_prev)
+		z_delta = norm(s.z_work .- z_prev)
+		record_diagnostics(s.diagnostics, i, s.w_work, s.z_work, v, w_delta, z_delta)
+		niters = i
+		if w_delta < ϵ && z_delta < ϵ
+			w = w_prev
+			z = z_prev
+			break
+		end
+		if isnan(w_delta) || isnan(z_delta)
+			# halt iteration with the previous values of w and z
+			w = SVector(s.w_work)
+			z = SVector(s.z_work)
+			w_delta = w_prev_delta
+			z_delta = z_prev_delta
+			break
+		end
+	end
+	if w_delta < ϵ && z_delta < ϵ
+		s.solver_state = OPTIMAL
+		s.primal .= s.z_work
+		s.dual .= v
+		return niters
+	elseif w_delta > ϵ
+		s.solver_state = PRIMAL_INFEASIBLE
+		s.dual .= s.w_work ./ norm(s.w_work)
+		return niters
+	elseif z_delta > ϵ
+		s.solver_state = DUAL_INFEASIBLE
+		s.primal .= s.z_work ./ norm(s.z_work)
 		return niters
 	end
 	s.solver_state = TIMEOUT

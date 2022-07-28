@@ -6,6 +6,85 @@ using SparseArrays
 using Profile
 const MOI = MathOptInterface
 using Test
+@testset "Masses raw" begin
+    # z = [x_0^t u_0^(t-1)]
+    t = 20
+    l = 32
+    x0 = repeat([0.1, 0.0], l)
+    Pd = 3*l*t + 2*l
+    P = sparse(1.0I, Pd, Pd)
+    q = zeros(3*t*l + 2*l)
+    Hd = 2*l*t
+    L = Tridiagonal(repeat([-1], l-1),repeat([2], l), repeat([-1], l-1))
+    Δ = 0.1
+    Ac = [zeros(l,l) 1.0I(l); -L zeros(l,l)]
+    A = exp(collect(Δ*Ac))
+    Bc = [zeros(l,l); 1.0I(l)]
+    B = Ac\((A - I(2*l))*Bc)
+    H = [([zeros(2*l*t, 2*l) sparse(I, Hd, Hd)]-[kron(I(t), A) zeros(2*l*t, 2*l)]) -kron(I(t), B)]
+    g = zeros(2*l*t)
+    K = PIPG.Zeros{Float64, 2*t*l}()
+    ρx = 1.0
+    ρu = 0.5
+    X = PIPG.InfNorm{Float64, 2*l, ρx}()
+    U = PIPG.InfNorm{Float64, l, ρu}()
+    D = PIPG.PTSpace{Float64}((PIPG.Equality{Float64, 2*l}(x0), repeat([X], t-1)..., PIPG.Zeros{Float64, 2*l}(), repeat([U], t)...))
+    prob = PIPG.Problem(K, D, sparse(H), sparse(P), MVector{3*t*l + 2*l}(q), MVector{2*l*t}(g), 0.0)
+    state = PIPG.State(prob)
+    α = PIPG.compute_α(prob, 0.99)
+    PIPG.pipg(prob, state, 1, α, 1e-4, SVector{3*t*l + 2*l}(zeros(3*t*l + 2*l)), SVector{2*l*t}(zeros(2*l*t)))
+    println("prerun done")
+    niters = @timed PIPG.pipg(prob, state, 1000000, α, 1e-4, SVector{3*t*l + 2*l}(zeros(3*t*l + 2*l)), SVector{2*l*t}(zeros(2*l*t)))
+    println(niters)
+    @test false
+end
+
+@testset "Projections" begin
+    @test PIPG.project(PIPG.POCone{Float64, 4}(), SVector(0.0, -4.0, 4.0, -10.0)) == SVector(0.0, 0.0, 4.0, 0.0)
+    res = MVector(0.0, 0.0, 0.0, 0.0)
+    PIPG.project!(res, 1, PIPG.POCone{Float64, 4}(), SVector(0.0, -4.0, 4.0, -10.0))
+    @test res == MVector(0.0, 0.0, 4.0, 0.0)
+    res = MVector{10}(zeros(10))
+    PIPG.project!(res, 7, PIPG.POCone{Float64, 4}(), SVector(0.0, -4.0, 4.0, -10.0))
+    @test res == MVector{10}(vcat(zeros(6), PIPG.project(PIPG.POCone{Float64, 4}(), SVector(0.0, -4.0, 4.0, -10.0))))
+    
+    @test PIPG.project(PIPG.NOCone{Float64, 4}(), SVector(0.0, -4.0, 4.0, -10.0)) == SVector(0.0, -4.0, 0.0, -10.0)
+    res = MVector(0.0, 0.0, 0.0, 0.0)
+    PIPG.project!(res, 1, PIPG.NOCone{Float64, 4}(), SVector(0.0, -4.0, 4.0, -10.0))
+    @test res == MVector(0.0, -4.0, 0.0, -10.0)
+    res = MVector{10}(zeros(10))
+    PIPG.project!(res, 7, PIPG.NOCone{Float64, 4}(), SVector(0.0, -4.0, 4.0, -10.0))
+    @test res == MVector{10}(vcat(zeros(6), PIPG.project(PIPG.NOCone{Float64, 4}(), SVector(0.0, -4.0, 4.0, -10.0))))
+
+    soc_project = SVector(7.744562646538029, -2.696310623822791, 2.696310623822791, -6.740776559556978)
+    @test PIPG.project(PIPG.SOCone{Float64, 4}(), SVector(4.0, -4.0, 4.0, -10.0)) ≈ soc_project
+    res = MVector(0.0, 0.0, 0.0, 0.0)
+    PIPG.project!(res, 1, PIPG.SOCone{Float64, 4}(), SVector(4.0, -4.0, 4.0, -10.0))
+    @test res ≈ soc_project
+    res = MVector{10}(zeros(10))
+    PIPG.project!(res, 7, PIPG.SOCone{Float64, 4}(), SVector(4.0, -4.0, 4.0, -10.0))
+    @test res ≈ MVector{10}(vcat(zeros(6), soc_project))
+
+    nsoc_project = SVector(-7.744562646538029, -2.696310623822791, 2.696310623822791, -6.740776559556978)
+    @test PIPG.project(PIPG.NSOCone{Float64, 4}(), SVector(-4.0, -4.0, 4.0, -10.0)) ≈ nsoc_project
+    res = MVector(0.0, 0.0, 0.0, 0.0)
+    PIPG.project!(res, 1, PIPG.NSOCone{Float64, 4}(), SVector(-4.0, -4.0, 4.0, -10.0))
+    @test res ≈ nsoc_project
+    res = MVector{10}(zeros(10))
+    PIPG.project!(res, 7, PIPG.NSOCone{Float64, 4}(), SVector(-4.0, -4.0, 4.0, -10.0))
+    @test res ≈ MVector{10}(vcat(zeros(6), nsoc_project))
+
+    combined = SVector(-1.0, 1.0, -1.0, 1.0)
+    result = SVector(0.0, 1.0, -1.0, 0.0)
+    cone = PIPG.PTCone{Float64}((PIPG.POCone{Float64, 2}(), PIPG.NOCone{Float64, 2}()))
+    @test PIPG.project(cone, combined) ≈ result
+    res = MVector(0.0, 0.0, 0.0, 0.0)
+    PIPG.project!(res, 1, cone, combined)
+    @test res ≈ result
+    res = MVector{10}(zeros(10))
+    PIPG.project!(res, 7, cone, combined)
+    @test res ≈ MVector{10}(vcat(zeros(6), result))
+end
 
 @testset "Linear algebra routines" begin 
     for i=1:100
@@ -106,7 +185,6 @@ end
     niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.00001, SVector(0.0, 0.0), SVector(0.0))
     @test norm(state.primal .* state.col_scale .- [0.689, -0.689]) < 0.001
 end
-
 #=
 @testset "Profiling" begin 
     make_prob() = PIPG.Problem(PIPG.PTCone{Float64}((PIPG.POCone{Float64, 1}(), PIPG.POCone{Float64, 1}(), PIPG.POCone{Float64, 1}(), 
@@ -119,15 +197,20 @@ end
     state = PIPG.State(prob)
     γ = 0.9
     PIPG.scale(prob, state)
-    scale_a_bunch(prob,state,niters) = for i=1:niters PIPG.scale(prob, state) end
-    scale_a_bunch(prob, state, 1)
+    #scale_a_bunch(prob,state,niters) = for i=1:niters PIPG.scale(prob, state) end
+    #scale_a_bunch(prob, state, 1)
+    solve_a_bunch(prob, state, niters) = 
+        for i=1:niters 
+            PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.00001, SVector(0.0, 0.0), SVector(0.0, 0.0, 0.0, 0.0, 0.0)) 
+        end
+    solve_a_bunch(prob, state, 1)
     Profile.clear()
-    @profile scale_a_bunch(prob, state, 1000000)
-    @time scale_a_bunch(prob, state, 1000000)
+    @profile solve_a_bunch(prob, state, 10000)
+    @time solve_a_bunch(prob, state, 10000)
     Profile.print(C=true)
+    @test false
 end
 =#
-
 function basic_lp()
     opt = PIPG.Optimizer(ϵ=1e-7)
     model = MOI.Bridges.full_bridge_optimizer(
@@ -432,6 +515,39 @@ end
     @test MOI.get(model, MOI.DualStatus()) == MOI.FEASIBLE_POINT
     @test MOI.get(model, MOI.TerminationStatus()) == MOI.OPTIMAL
     @test norm(MOI.get.(model, MOI.VariablePrimal(), x)  .- [60, 0]) < 0.01
+end
+
+@testset "Conic clone" begin
+    T = Float64
+    opt = PIPG.Optimizer()
+    model = MOI.Bridges.full_bridge_optimizer(
+        MOI.Utilities.CachingOptimizer(
+            MOI.Utilities.UniversalFallback(MOI.Utilities.Model{Float64}()),
+            opt,
+        ),
+        Float64,
+    )
+    abx, rsoc =
+        MOI.add_constrained_variables(model, MOI.RotatedSecondOrderCone(4))
+    a, b, x1, x2 = abx
+    x = [x1, x2]
+    vc1 = MOI.add_constraint(model, a, MOI.EqualTo(T(1 // 2)))
+    # We test this after the creation of every `VariableIndex` constraint
+    # to ensure a good coverage of corner cases.
+    @test vc1.value == a.value
+    vc2 = MOI.add_constraint(model, b, MOI.EqualTo(T(1)))
+    @test vc2.value == b.value
+    MOI.set(
+        model,
+        MOI.ObjectiveFunction{MOI.ScalarAffineFunction{T}}(),
+        MOI.ScalarAffineFunction(MOI.ScalarAffineTerm.(T(1), x), T(0)),
+    )
+    MOI.set(model, MOI.ObjectiveSense(), MOI.MAX_SENSE)
+    @test MOI.get(model, MOI.TerminationStatus()) == MOI.OPTIMIZE_NOT_CALLED
+    MOI.optimize!(model)
+    @test MOI.get(model, MOI.PrimalStatus()) == MOI.FEASIBLE_POINT
+    @test ≈(MOI.get(model, MOI.VariablePrimal(), a), T(1 // 2))
+    @test ≈(MOI.get(model, MOI.VariablePrimal(), b), 1)
 end
 
 @testset "Geometric mean cone clone" begin 
