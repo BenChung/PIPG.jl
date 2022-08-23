@@ -1,5 +1,5 @@
-@generated function scale(p::P, s::State{T,N,M,K,D,P,G,SC}) where {T,N,M,K,D,
-	P <: Problem{T,N,M,K,D},
+@generated function scale(p::P, s::State{T,N,M,K,D,A,P,G,SC}) where {T,N,M,K,D,A,
+	P <: Problem{T,N,M,K,D,A},
 	SC <: Tuple{Vararg{<:Scaling{T, M, N}}},G}
 	scale_ast = [quote
 		row_scale(p, s, row_scaling(p, s.scaling[$i], 0, p.k))
@@ -18,7 +18,7 @@ end
 @generated function row_scaling(p::P, 
 	s::Scaling{T,M,N}, 
 	arg_offs::Int,
-	cs::PTCone{T, CS}) where {T,N,M,K,D,P <: Problem{T,N,M,K,D},CS}
+	cs::PTCone{T, CS}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CS}
 	if N == 0 || M == 0
 		return :(ones(SVector{M, T}))
 	end
@@ -30,7 +30,7 @@ end
 	end
 	return :(vcat($(arr...)))
 end
-function col_scaling(p::P, s::ArithMean{T,M,N}) where {T,N,M,K,D,P <: Problem{T,N,M,K,D}}
+function col_scaling(p::P, s::ArithMean{T,M,N}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}}
 	if N == 0 || M == 0
 		return ones(SVector{N, T})
 	end
@@ -57,7 +57,7 @@ end
 @generated function row_scaling(p::P, 
 	s::ArithMean{T,M,N}, 
 	offs::Int,
-	::Union{Reals{T, CD}, Zeros{T, CD}, POCone{T, CD}, NOCone{T, CD}}) where {T,N,M,K,D,P <: Problem{T,N,M,K,D},CD}
+	::Union{Reals{T, CD}, Zeros{T, CD}, POCone{T, CD}, NOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CD}
 	return quote 
 		cols = rowvals(p.H)
 		vals = nonzeros(p.H)
@@ -67,7 +67,7 @@ end
 @generated function row_scaling(p::P, 
 	s::ArithMean{T,M,N}, 
 	offs::Int,
-	::Union{SOCone{T, CD}, NSOCone{T, CD}}) where {T,N,M,K,D,P <: Problem{T,N,M,K,D},CD}
+	::Union{SOCone{T, CD}, NSOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CD}
 	return quote 
 		cols = rowvals(p.H)
 		vals = nonzeros(p.H)
@@ -75,7 +75,7 @@ end
 		return SVector($((:(N/total) for j in 1:CD)...), )
 	end
 end
-function col_scaling(p::P, s::GeoMean{T,M,N}) where {T,N,M,K,D,P <: Problem{T,N,M,K,D}}
+function col_scaling(p::P, s::GeoMean{T,M,N}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}}
 	if N == 0 || M == 0
 		return ones(SVector{N, T})
 	end
@@ -103,7 +103,7 @@ end
 @generated function row_scaling(p::P, 
 	s::GeoMean{T,M,N}, 
 	offs::Int,
-	::Union{Reals{T, CD}, Zeros{T, CD}, POCone{T, CD}, NOCone{T, CD}}) where {T,N,M,K,D,P <: Problem{T,N,M,K,D},CD}
+	::Union{Reals{T, CD}, Zeros{T, CD}, POCone{T, CD}, NOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CD}
 	return quote 
 		cols = rowvals(p.H)
 		vals = nonzeros(p.H)
@@ -121,7 +121,7 @@ end
 @generated function row_scaling(p::P, 
 	s::GeoMean{T,M,N}, 
 	offs::Int,
-	::Union{SOCone{T, CD}, NSOCone{T, CD}}) where {T,N,M,K,D,P <: Problem{T,N,M,K,D},G,CD}
+	::Union{SOCone{T, CD}, NSOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},G,CD}
 	return quote 
 		cols = rowvals(p.H)
 		vals = nonzeros(p.H)
@@ -134,7 +134,7 @@ end
 		return SVector($((:scalar for j in 1:CD)...), )
 	end
 end
-function col_scaling(p::P, s::Equilibration{T,M,N}) where {T,N,M,K,D,P <: Problem{T,N,M,K,D}}
+function col_scaling(p::P, s::Equilibration{T,M,N}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}}
 	if N == 0 || M == 0
 		return ones(SVector{N, T})
 	end
@@ -168,7 +168,7 @@ end
 @generated function row_scaling(p::P, 
 	s::Equilibration{T,M,N}, 
 	offs::Int,
-	::Union{Reals{T, CD}, Zeros{T, CD}, POCone{T, CD}, NOCone{T, CD}}) where {T,N,M,K,D,P <: Problem{T,N,M,K,D},CD}
+	::Union{Reals{T, CD}, Zeros{T, CD}, POCone{T, CD}, NOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CD}
 	return quote 
 		cols = rowvals(p.H)
 		vals = nonzeros(p.H)
@@ -178,7 +178,7 @@ end
 @generated function row_scaling(p::P, 
 	s::Equilibration{T,M,N}, 
 	offs::Int,
-	::Union{SOCone{T, CD}, NSOCone{T, CD}}) where {T,N,M,K,D,P <: Problem{T,N,M,K,D},CD}
+	::Union{SOCone{T, CD}, NSOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CD}
 	return quote 
 		cols = rowvals(p.H)
 		vals = nonzeros(p.H)
@@ -187,13 +187,13 @@ end
 	end
 end
 
-function row_scale(p::P, s::State{T,N,M,K,D,P,G,S}, row_scaling::SVector{M,T}) where {T,N,M,K,D,P <: Problem{T,N,M,K,D},G,S}
+function row_scale(p::P, s::State{T,N,M,K,D,A,P,G,S}, row_scaling::SVector{M,T}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},G,S}
 	rmul!(p.H, Diagonal(row_scaling))
 	p.g .*= row_scaling
 	s.row_scale .*= row_scaling
 end
 
-function col_scale(p::P, s::State{T,N,M,K,D,P,G,S}, col_scaling::SVector{N, T}) where {T,N,M,K,D,P <: Problem{T,N,M,K,D},G,S}
+function col_scale(p::P, s::State{T,N,M,K,D,A,P,G,S}, col_scaling::SVector{N, T}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},G,S}
 	dmat = Diagonal(col_scaling)
 	# rescale H
 	lmul!(dmat, p.H)

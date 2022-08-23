@@ -35,7 +35,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
 	niters::Int
 	ϵ::Float64
 	γ::Float64
-	function Optimizer(; niters=1000000, ϵ=1e-4, γ=0.999)
+	function Optimizer(; niters=1000000, ϵ=1e-8, γ=0.999)
 		return new("", nothing, nothing, 0.0, nothing, nothing, false, 0.0, false, nothing, niters, ϵ, γ)
 	end
 end
@@ -172,7 +172,7 @@ function build_problem(
     H = convert(SparseMatrixCSC{Float64, Int64}, A)
     g = -1 .* Ab.constants
 
-    p = Problem(k, d, H, P, MVector{A.n, Float64}(q), MVector{A.m, Float64}(g), objective_constant)
+    p = Problem(k, d, H, P, q, g, objective_constant)
     if dest.scaling != nothing
     	s = State(p; scaling=dest.scaling(p))
 	else
@@ -226,9 +226,9 @@ function MOI.optimize!(
 
 	Ab = src.model.constraints
 	A = Ab.coefficients
-	#PIPG.scale(dest.problem, dest.state)
+	PIPG.scale(dest.problem, dest.state)
 	α = compute_α(dest.problem, dest.γ)
-    res = @timed pipg(dest.problem, dest.state, dest.niters, α, dest.ϵ, SVector{A.n, Float64}(zeros(A.n)), SVector{A.m, Float64}(zeros(A.m)))
+    res = @timed pipg(dest.problem, dest.state, dest.niters, α, dest.ϵ, zeros(A.n), zeros(A.m))
     println("niters=$(res[1])")
     dest.elapsed_time = res[2]
 end
@@ -239,9 +239,9 @@ function MOI.optimize!(dest::Optimizer)
 
 	n = length(dest.problem.q)
 	m = length(dest.problem.g)
-	#PIPG.scale(dest.problem, dest.state) # TODO: repeated scaling doesn't work for some reason
+	PIPG.scale(dest.problem, dest.state) # TODO: repeated scaling doesn't work for some reason
 	α = compute_α(dest.problem, dest.γ)
-    res = @timed pipg(dest.problem, dest.state, dest.niters, α, dest.ϵ, SVector{n, Float64}(zeros(n)), SVector{m, Float64}(zeros(m)))
+    res = @timed pipg(dest.problem, dest.state, dest.niters, α, dest.ϵ, zeros(n), zeros(m))
     println("niters=$(res[1])")
     dest.elapsed_time = res[2]
 end
