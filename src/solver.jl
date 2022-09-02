@@ -36,18 +36,18 @@ project(::Zeros{T, D}, x::SVector{D, T}) where {D, T} = zeros(SVector{D})
 project(::InfNorm{T, D, δ}, x::SVector{D, T}) where {D, T, δ} = clamp.(x, -δ, δ)
 project(e::Equality{T, D}, x::SVector{D, T}) where {D, T, δ} = e.v
 
-project!(t, i, ::Reals{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 t[j] = x[j] end)
-project!(t, i, ::Zeros{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (t[i:i+D-1] .= zero(D))
-project!(t, i, ::InfNorm{T, D, δ}, x::AbstractArray{T}) where {D, T, δ} = @inbounds (for j in i:i+D-1 t[j] = clamp(x[j], -δ, δ) end)
-project!(t, i, c::POCone{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (t[i:i+D-1] .= max.(x[i:i+D-1], zero(T)))
-function project!(t, i, e::Equality{T, D}, x::AbstractArray{T}) where {D, T, δ} 
-	t[i:i+D-1] .= e.v
+project!(t, i, ::Reals{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 @inbounds t[j] = x[j] end)
+project!(t, i, ::Zeros{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 @inbounds t[j] = zero(T) end)
+project!(t, i, ::InfNorm{T, D, δ}, x::AbstractArray{T}) where {D, T, δ} = @inbounds (for j in i:i+D-1 @inbounds t[j] = clamp(x[j], -δ, δ) end)
+project!(t, i, c::POCone{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 t[j] = max(x[j], zero(T)) end)
+function project!(t, i, e::Equality{T, D}, x::AbstractArray{T}) where {D, T} 
+	@inbounds (for j=i:i+D-1 t[j] = e.v[j] end)
 end
 function project(c::POCone{T, D}, x::SVector{D, T}) where {D, T}
 	return max.(x, zero(T))
 end
 
-project!(t, i, c::NOCone{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (t[i:i+D-1] .= min.(x[i:i+D-1], zero(T)))
+project!(t, i, c::NOCone{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 t[j] = min(x[j], zero(T)) end)
 function project(c::NOCone{T, D}, x::SVector{D, T}) where {D, T}
 	return min.(x, zero(T))
 end
@@ -94,7 +94,6 @@ end
 @generated function project!(t, i, c::NSOCone{T, D}, x::AbstractArray{T}) where {T, D}
 	onev = one(T)
 	two = 2*onev
-	zv = zeros(SVector{D,T})
 	vect_inds = SVector{D-1}((2:D) .- 1)
 	return quote
 		xnorm = norm(x[i .+ $vect_inds])
@@ -127,6 +126,7 @@ end
 		offs -= 1
 		push!(out.args, :(project!(t, i+$offs, c.cones[$ind], x)))
 	end
+	push!(out.args, :(return))
 	return out
 end
 @generated function project(c::Union{PTCone{T, Cs, D}, PTSpace{T, Cs, D}}, x::SVector{D, T}) where {T, Cs, D}
@@ -350,6 +350,14 @@ function pipg_basic(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, α::T, ϵ::T, z:
 	return niters
 end
 
+function norm_err(a::Vector{T}, b::Vector{T}) where T
+	@assert length(a) == length(b)
+	result = zero(T)
+	for i=1:length(a)
+		@inbounds result += (a[i] - b[i])^2
+	end
+	return sqrt(result)
+end
 function pipg(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, α::T, ϵ::T, ξ_init::A, η_init::A) where {T,N,M,K,D,A,P<:Problem{T,N,M,K,D,A}, G<:Diagnostics{T}}
 	@assert length(ξ_init) == N
 	@assert length(η_init) == M
@@ -390,8 +398,8 @@ function pipg(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, α::T, ϵ::T, ξ_init:
 
 		w_prev_delta = w_delta
 		z_prev_delta = z_delta
-		w_delta = sqrt(sum(@~ (s.w_work .- s.w_prev) .^ 2; init=zero(T)))
-		z_delta = sqrt(sum(@~ (s.z_work .- s.z_prev) .^ 2; init=zero(T)))
+		w_delta = norm_err(s.w_work, s.w_prev)
+		z_delta = norm_err(s.w_work, s.w_prev)
 		record_diagnostics(s.diagnostics, i, s.w_work, s.z_work, s.ξ_work, w_delta, z_delta)
 		niters = i
 		if w_delta < ϵ && z_delta < ϵ
