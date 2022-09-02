@@ -60,42 +60,54 @@ using Test
     PIPG.project!(res, 7, cone, combined)
     @test res ≈ (vcat(zeros(6), result))
 end
-#=
-@testset "Masses raw" begin
-    # z = [x_0^t u_0^(t-1)]
-    t = 20
-    l = 32
-    x0 = repeat([0.1, 0.0], l)
-    Pd = 3*l*t + 2*l
-    P = sparse(1.0I, Pd, Pd)
-    q = zeros(3*t*l + 2*l)
-    Hd = 2*l*t
-    L = Tridiagonal(repeat([-1], l-1),repeat([2], l), repeat([-1], l-1))
-    Δ = 0.1
-    Ac = [zeros(l,l) 1.0I(l); -L zeros(l,l)]
-    A = exp(collect(Δ*Ac))
-    Bc = [zeros(l,l); 1.0I(l)]
-    B = Ac\((A - I(2*l))*Bc)
-    H = [([zeros(2*l*t, 2*l) sparse(I, Hd, Hd)]-[kron(I(t), A) zeros(2*l*t, 2*l)]) -kron(I(t), B)]
-    g = zeros(2*l*t)
-    K = PIPG.Zeros{Float64, 2*t*l}()
-    ρx = 1.0
-    ρu = 0.5
-    X = PIPG.InfNorm{Float64, 2*l, ρx}()
-    U = PIPG.InfNorm{Float64, l, ρu}()
-    D = PIPG.PTSpace{Float64}((PIPG.Equality{Float64, 2*l}(x0), repeat([X], t-1)..., PIPG.Zeros{Float64, 2*l}(), repeat([U], t)...))
-    prob = PIPG.Problem(K, D, sparse(H), sparse(P), q, g, 0.0)
-    state = PIPG.State(prob)
-    α = PIPG.compute_α(prob, 0.99)
-    println("prerun start")
-    PIPG.pipg(prob, state, 1, α, 1e-4, zeros(3*t*l + 2*l), zeros(2*l*t))
-    println("prerun done")
-    niters = @timed PIPG.pipg(prob, state, 100000, α, 1e-5, zeros(3*t*l + 2*l), zeros(2*l*t))
-    println(niters)
-    println(state.solver_state)
-    @test false
+
+@testset "Scalings" begin
+    K = PIPG.POCone{Float64, 3}()
+    D = PIPG.Reals{Float64, 3}()
+    H = [1.0 0.5 0.25; 0.5 1.0 0.25; 0.5 0.25 1.0]
+    P = [1.0 2 3; 4.0 5 6; 7 8 9]
+    q = [1.0, 1.0, 1.0]
+    g = [1.0, 1.0, 1.0]
+    p = PIPG.Problem(K, D, sparse(H), sparse(P), q, g, 0.0)
+    @test ≈(PIPG.row_scaling(p, PIPG.ArithMean(p), 0, PIPG.Reals{Float64, 3}()), [1.7142, 1.7142, 1.7142], atol=0.01)
+    @test ≈(PIPG.row_scaling(p, PIPG.ArithMean(p), 0, PIPG.SOCone{Float64, 3}()), [0.5714, 0.5714, 0.5714], atol=0.01)
+    @test ≈(PIPG.row_scaling(p, PIPG.GeoMean(p), 0, PIPG.Reals{Float64, 3}()), [2.0, 2.0, 2.0], atol=0.01)
+    @test ≈(PIPG.row_scaling(p, PIPG.GeoMean(p), 0, PIPG.SOCone{Float64, 3}()),[2.0, 2.0, 2.0], atol=0.01)
+    @test ≈(PIPG.row_scaling(p, PIPG.Equilibration(p), 0, PIPG.Reals{Float64, 3}()), [1.0, 1.0, 1.0], atol=0.01)
+    @test ≈(PIPG.row_scaling(p, PIPG.Equilibration(p), 0, PIPG.SOCone{Float64, 3}()), [0.333, 0.333, 0.333], atol=0.01)
+    @test ≈(PIPG.col_scaling(p, PIPG.ArithMean(p)), [1.5, 1.714, 2.0], atol=0.01)
+    @test ≈(PIPG.col_scaling(p, PIPG.GeoMean(p)),[0.816, 0.894, 0.894], atol=0.01)
+    @test ≈(PIPG.col_scaling(p, PIPG.Equilibration(p)), [1.0, 1.0, 1.0], atol=0.01)
+    out = zeros(3)
+    PIPG.row_scaling!(out, p, PIPG.ArithMean(p), 0, PIPG.Reals{Float64, 3}())
+    @test ≈(out, [1.7142, 1.7142, 1.7142], atol=0.01)
+    out = zeros(3)
+    PIPG.row_scaling!(out, p, PIPG.ArithMean(p), 0, PIPG.SOCone{Float64, 3}())
+    @test ≈(out, [0.5714, 0.5714, 0.5714], atol=0.01)
+    
+    out = zeros(3)
+    PIPG.row_scaling!(out, p, PIPG.GeoMean(p), 0, PIPG.Reals{Float64, 3}())
+    @test ≈(out, [2.0, 2.0, 2.0], atol=0.01)
+    out = zeros(3)
+    PIPG.row_scaling!(out, p, PIPG.GeoMean(p), 0, PIPG.SOCone{Float64, 3}())
+    @test ≈(out, [2.0, 2.0, 2.0], atol=0.01)
+    
+    out = zeros(3)
+    PIPG.row_scaling!(out, p, PIPG.Equilibration(p), 0, PIPG.Reals{Float64, 3}())
+    @test ≈(out, [1.0, 1.0, 1.0], atol=0.01)
+    out = zeros(3)
+    PIPG.row_scaling!(out, p, PIPG.Equilibration(p), 0, PIPG.SOCone{Float64, 3}())
+    @test ≈(out, [0.333, 0.333, 0.333], atol=0.01)
+
+    out = zeros(3)
+    PIPG.col_scaling!(out, p, PIPG.ArithMean(p))
+    @test ≈(out, [1.5, 1.714, 2.0], atol=0.01)
+    PIPG.col_scaling!(out, p, PIPG.GeoMean(p))
+    @test ≈(out,[0.816, 0.894, 0.894], atol=0.01)
+    PIPG.col_scaling!(out, p, PIPG.Equilibration(p))
+    @test ≈(out, [1.0, 1.0, 1.0], atol=0.01)
 end
-=#
+
 @testset "Linear algebra routines" begin 
     for i=1:100
         res = MVector{10,Float64}(zeros(10))
@@ -147,10 +159,24 @@ end
     PIPG.scale(prob, state)
     niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0])
     @test norm(state.primal .* state.col_scale .- [60, 20]) < 0.01
+    println(niters)
 
     prob = make_qp()
     state = PIPG.State(prob; scaling=(PIPG.GeoMean(prob), ))
     PIPG.scale(prob, state)
+    niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0])
+    @test norm(state.primal .* state.col_scale .- [0.689, -0.689]) < 0.001
+
+    prob = make_prob()
+    state = PIPG.State(prob; scaling=(PIPG.GeoMean(prob), ))
+    PIPG.scale!(prob, state)
+    niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0])
+    @test norm(state.primal .* state.col_scale .- [60, 20]) < 0.01
+    println(niters)
+
+    prob = make_qp()
+    state = PIPG.State(prob; scaling=(PIPG.GeoMean(prob), ))
+    PIPG.scale!(prob, state)
     niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0])
     @test norm(state.primal .* state.col_scale .- [0.689, -0.689]) < 0.001
 
@@ -165,6 +191,17 @@ end
     prob = make_qp()
     state = PIPG.State(prob; scaling=(PIPG.ArithMean(prob), ))
     PIPG.scale(prob, state)
+    niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.00001, [0.0, 0.0], [0.0])
+    @test norm(state.primal .* state.col_scale .- [0.689, -0.689]) < 0.001
+    prob = make_prob()
+    state = PIPG.State(prob; scaling=(PIPG.ArithMean(prob), ))
+    PIPG.scale!(prob, state)
+    niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0])
+    @test norm(state.primal .* state.col_scale .- [60, 20]) < 0.01
+
+    prob = make_qp()
+    state = PIPG.State(prob; scaling=(PIPG.ArithMean(prob), ))
+    PIPG.scale!(prob, state)
     niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.00001, [0.0, 0.0], [0.0])
     @test norm(state.primal .* state.col_scale .- [0.689, -0.689]) < 0.001
 
@@ -182,6 +219,18 @@ end
     niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.00001, [0.0, 0.0], [0.0])
     @test norm(state.primal .* state.col_scale .- [0.689, -0.689]) < 0.001
 
+    prob = make_prob()
+    state = PIPG.State(prob; scaling=(PIPG.Equilibration(prob), ))
+    PIPG.scale!(prob, state)
+    niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0])
+    @test norm(state.primal .* state.col_scale .- [60, 20]) < 0.01
+
+    prob = make_qp()
+    state = PIPG.State(prob; scaling=(PIPG.Equilibration(prob), ))
+    PIPG.scale!(prob, state)
+    niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.00001, [0.0, 0.0], [0.0])
+    @test norm(state.primal .* state.col_scale .- [0.689, -0.689]) < 0.001
+
     # default scaling (geomean + equlibration)
     prob = make_prob()
     state = PIPG.State(prob)
@@ -194,7 +243,65 @@ end
     PIPG.scale(prob, state)
     niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.00001, [0.0, 0.0], [0.0])
     @test norm(state.primal .* state.col_scale .- [0.689, -0.689]) < 0.001
+
+    # mutable scaling (geomean + equlibration)
+    prob = make_prob()
+    state = PIPG.State(prob)
+    PIPG.scale!(prob, state)
+    niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0])
+    @test norm(state.primal .* state.col_scale .- [60, 20]) < 0.01
+
+    prob = make_qp()
+    state = PIPG.State(prob)
+    PIPG.scale!(prob, state)
+    niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.00001, [0.0, 0.0], [0.0])
+    @test norm(state.primal .* state.col_scale .- [0.689, -0.689]) < 0.001
 end
+#=
+@testset "Masses raw" begin
+    # z = [x_0^t u_0^(t-1)]
+    t = 20
+    l = 32
+    x0 = repeat([0.1, 0.0], l)
+    Pd = 3*l*t + 2*l
+    P = sparse(1.0I, Pd, Pd)
+    q = zeros(3*t*l + 2*l)
+    Hd = 2*l*t
+    L = Tridiagonal(repeat([-1], l-1),repeat([2], l), repeat([-1], l-1))
+    Δ = 0.1
+    Ac = [zeros(l,l) 1.0I(l); -L zeros(l,l)]
+    A = exp(collect(Δ*Ac))
+    Bc = [zeros(l,l); 1.0I(l)]
+    B = Ac\((A - I(2*l))*Bc)
+    H = [([zeros(2*l*t, 2*l) sparse(I, Hd, Hd)]-[kron(I(t), A) zeros(2*l*t, 2*l)]) -kron(I(t), B)]
+    g = zeros(2*l*t)
+    K = PIPG.Zeros{Float64, 2*t*l}()
+    ρx = 1.0
+    ρu = 0.5
+    X = PIPG.InfNorm{Float64, 2*l, ρx}()
+    U = PIPG.InfNorm{Float64, l, ρu}()
+    D = PIPG.PTSpace{Float64}((PIPG.Equality{Float64, 2*l}(x0), repeat([X], t-1)..., PIPG.Zeros{Float64, 2*l}(), repeat([U], t)...))
+    prob = PIPG.Problem(K, D, sparse(H), sparse(P), q, g, 0.0)
+    state = PIPG.State(prob)
+    α = PIPG.compute_α(prob, 0.99)
+    println("prerun start")
+    PIPG.scale!(prob, state)
+    a = zeros(3*t*l + 2*l)
+    b = zeros(2*l*t)
+    function testfun(prob, state, a, b, niters)
+        a .= 0.0
+        b .= 0.0
+        return PIPG.pipg(prob, state, niters, α, 1e-5, zeros(3*t*l + 2*l), zeros(2*l*t))
+    end
+    testfun(prob, state, a, b, 1)
+    println("prerun done")
+    Profile.clear()
+    @profile for i=1:10 testfun(prob, state, a, b, 10000) end
+    Profile.print(C=true)
+    println(state.solver_state)
+    @test false
+end
+=#
 #=
 @testset "Profiling" begin 
     make_prob() = PIPG.Problem(PIPG.PTCone{Float64}((PIPG.POCone{Float64, 1}(), PIPG.POCone{Float64, 1}(), PIPG.POCone{Float64, 1}(), 

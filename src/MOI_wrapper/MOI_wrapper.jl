@@ -35,7 +35,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
 	niters::Int
 	ϵ::Float64
 	γ::Float64
-	function Optimizer(; niters=1000000, ϵ=1e-8, γ=0.999)
+	function Optimizer(; niters=1000000, ϵ=1e-9, γ=0.999)
 		return new("", nothing, nothing, 0.0, nothing, nothing, false, 0.0, false, nothing, niters, ϵ, γ)
 	end
 end

@@ -1,7 +1,7 @@
 abstract type Space{T, D} end	
 struct InfNorm{T, D, δ} <: Space{T, D} end
 struct Equality{T, D} <: Space{T, D}
-	v
+	v::Vector{T}
 end
 struct PTSpace{T, Cs<:Tuple{Vararg{C where C<:Space{T}}}, D} <: Space{T, D}
 	cones::Cs
@@ -36,9 +36,9 @@ project(::Zeros{T, D}, x::SVector{D, T}) where {D, T} = zeros(SVector{D})
 project(::InfNorm{T, D, δ}, x::SVector{D, T}) where {D, T, δ} = clamp.(x, -δ, δ)
 project(e::Equality{T, D}, x::SVector{D, T}) where {D, T, δ} = e.v
 
-project!(t, i, ::Reals{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (t[i:i+D-1] .= x[i:i+D-1])
-project!(t, i, ::Zeros{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (t[i:i+D-1] .= zeros(D))
-project!(t, i, ::InfNorm{T, D, δ}, x::AbstractArray{T}) where {D, T, δ} = @inbounds (t[i:i+D-1] .= clamp.(x[i:i+D-1], -δ, δ))
+project!(t, i, ::Reals{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 t[j] = x[j] end)
+project!(t, i, ::Zeros{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (t[i:i+D-1] .= zero(D))
+project!(t, i, ::InfNorm{T, D, δ}, x::AbstractArray{T}) where {D, T, δ} = @inbounds (for j in i:i+D-1 t[j] = clamp(x[j], -δ, δ) end)
 project!(t, i, c::POCone{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (t[i:i+D-1] .= max.(x[i:i+D-1], zero(T)))
 function project!(t, i, e::Equality{T, D}, x::AbstractArray{T}) where {D, T, δ} 
 	t[i:i+D-1] .= e.v
@@ -192,32 +192,35 @@ end
 
 abstract type Scaling{T, M, N} end
 struct GeoMean{T, M, N} <: Scaling{T, M, N}
-	colmax::MVector{N, T}
-	colmin::MVector{N, T}
-	GeoMean(::Problem{T,N,M}) where {T,M,N} = new{T, M, N}(MVector{N, T}(zeros(T, N)), MVector{N, T}(zeros(T, N)))
+	colmax::Vector{T} # N
+	colmin::Vector{T} # N
+	GeoMean(::Problem{T,N,M}) where {T,M,N} = new{T, M, N}(zeros(T, N), zeros(T, N))
 end
 struct ArithMean{T, M, N} <: Scaling{T, M, N}
-	colsum::MVector{N, T}
-	ArithMean(::Problem{T,N,M}) where {T,M,N} = new{T, M, N}(MVector{N, T}(zeros(T, N)))
+	colsum::Vector{T} # N
+	ArithMean(::Problem{T,N,M}) where {T,M,N} = new{T, M, N}(zeros(T, N))
 end
 struct Equilibration{T, M, N} <: Scaling{T, M, N}
-	colmax::MVector{N, T}
-	Equilibration(::Problem{T,N,M}) where {T,M,N} = new{T, M, N}(MVector{N, T}(zeros(T, N)))
+	colmax::Vector{T} # N
+	Equilibration(::Problem{T,N,M}) where {T,M,N} = new{T, M, N}(zeros(T, N))
 end
 
 @enum SolverState INDEFINITE OPTIMAL PRIMAL_INFEASIBLE DUAL_INFEASIBLE TIMEOUT
 mutable struct State{T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}, G <: Diagnostics{T}, SCs <: Tuple{Vararg{<:Scaling{T, M, N}}}}
 	w_i1::A # M
-	z_i1::A # N
+	ξ_i1::A # N
 	z_i2::A # N
 	v_i1::A # M
 
 	w_prev::A # M
 	z_prev::A # N
+
 	w_work::A # M
 	z_work::A # N
-	v_work::A # M
 
+	η_work::A # M
+	ξ_work::A # N
+	
 	col_scale::A # N
 	row_scale::A # M
 	
@@ -237,7 +240,9 @@ mutable struct State{T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}, G <: Diagnostics{T},
 	row_scale .= one(T)
 	return new{T,N,M,K,D,A,P,G,SCs}(
 		similar(p.g), similar(p.q), similar(p.q), similar(p.g), 
-		similar(p.g), similar(p.q), similar(p.g), similar(p.q), similar(p.g),
+		similar(p.g), similar(p.q), 
+		similar(p.g), similar(p.q), 
+		similar(p.g), similar(p.q),
 		col_scale, row_scale,
 		INDEFINITE, similar(p.q), similar(p.g), diag, scaling)
 	end
@@ -345,52 +350,49 @@ function pipg_basic(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, α::T, ϵ::T, z:
 	return niters
 end
 
-function pipg(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, α::T, ϵ::T, z_init::A, v_init::A) where {T,N,M,K,D,A,P<:Problem{T,N,M,K,D,A}, G<:Diagnostics{T}}
-	@assert length(z_init) == N
-	@assert length(v_init) == M
-	s.w_work .= v_init
-	s.z_work .= z_init
-	s.v_work .= v_init
+function pipg(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, α::T, ϵ::T, ξ_init::A, η_init::A) where {T,N,M,K,D,A,P<:Problem{T,N,M,K,D,A}, G<:Diagnostics{T}}
+	@assert length(ξ_init) == N
+	@assert length(η_init) == M
+	ρ = 1.0
+	β = α # for now
+	s.w_prev .= zero(T)
+	s.z_prev .= zero(T)
+	s.w_work .= zero(T)
+	s.z_work .= zero(T)
+	s.ξ_work .= ξ_init
+	s.η_work .= η_init
 	w_delta = zero(T)
 	z_delta = zero(T)
 	w_prev_delta = zero(T)
 	z_prev_delta = zero(T)
 	niters = 0
 	for i=1:iters
-#=
-		w_prev = copy(s.w_work)
-		w_raw = s.v_work + α*(transpose(p.H) * s.z_work - p.g)
-		w = project(polar(p.k), SVector{M}(w_raw))
-		z_prev = copy(s.z_work)
-		z_raw = s.z_work - α*(p.P * s.z_work + p.q + p.H * w)
-		z = project(p.d, SVector{N}(z_raw))
-		v = w + α * transpose(p.H) * (z - z_prev)
-=#
-		s.w_prev .= s.w_work
-		# w_raw = v + α*(transpose(p.H) * z - p.g)
-		s.w_i1 .= p.g
-		mul!(s.w_i1, transpose(p.H), s.z_work, α, -α)
-		w_raw = s.w_i1
-		w_raw .+= s.v_work
-		project!(s.w_work, 1, polar(p.k), w_raw)
 		s.z_prev .= s.z_work
-		# z_raw = z - α*(p.P * z + p.q + p.H * w)
-		s.z_i1 .= p.q
-		mul!(s.z_i1, p.P, s.z_work, α, α)
-		mul!(s.z_i1, p.H, s.w_work, -α, -1.0)
-		z_raw = s.z_i1
-		z_raw .+= s.z_work
+		# z_raw = ξ - α(H^T η + Pξ +  q)
+		s.ξ_i1 .= p.q # ξ_i1 = q
+		mul!(s.ξ_i1, p.P, s.ξ_work, α, α) # ξ_i1 = α * P * ξ + α * q
+		mul!(s.ξ_i1, p.H, s.η_work, -α, -1.0) # ξ_i1 = - α (H^t η + P * ξ + q)
+		z_raw = s.ξ_i1 # z_raw = - α (H^t η + P * ξ + q)
+		z_raw .+= s.ξ_work # z_raw = ξ - α (H^t η + P * ξ + q)
 		project!(s.z_work, 1, p.d, z_raw)
-		s.z_i1 .= s.z_work .- s.z_prev
-		# v = w + α * transpose(p.H) * (z - z_prev)
-		mul!(s.v_i1, transpose(p.H), s.z_i1, α, 0.0)
-		s.v_work .= s.w_work .+ s.v_i1
+
+		s.w_prev .= s.w_work
+		# s.w_i1 = v + α*(transpose(p.H) * z - p.g) -> ξ + β(H(2z - ξ) - g)
+		s.w_i1 .= p.g 
+		s.ξ_i1 .= @~ 2 .* s.z_work .- s.ξ_work # w_work = 2z - ξ
+		mul!(s.w_i1, transpose(p.H), s.ξ_i1, β, -β) # w_i1 = β(H(2z - ξ) - g)
+		s.w_i1 .+= s.η_work # w_i1 = η + β(H(2z - ξ) - g)
+		project!(s.w_work, 1, polar(p.k), s.w_i1)
+		# ξ = (1-ρ)ξ + ρ z
+		s.ξ_work .= @~ (1-ρ) .* s.ξ_work .+ ρ .* s.z_work
+		# η = (1-ρ)η + ρ w
+		s.η_work .= @~ (1-ρ) .* s.η_work .+ ρ .* s.w_work
 
 		w_prev_delta = w_delta
 		z_prev_delta = z_delta
-		w_delta = norm(s.w_work .- s.w_prev)
-		z_delta = norm(s.z_work .- s.z_prev)
-		record_diagnostics(s.diagnostics, i, s.w_work, s.z_work, s.v_work, w_delta, z_delta)
+		w_delta = sqrt(sum(@~ (s.w_work .- s.w_prev) .^ 2; init=zero(T)))
+		z_delta = sqrt(sum(@~ (s.z_work .- s.z_prev) .^ 2; init=zero(T)))
+		record_diagnostics(s.diagnostics, i, s.w_work, s.z_work, s.ξ_work, w_delta, z_delta)
 		niters = i
 		if w_delta < ϵ && z_delta < ϵ
 			s.w_work .= s.w_prev
@@ -407,7 +409,7 @@ function pipg(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, α::T, ϵ::T, z_init::
 	if w_delta < ϵ && z_delta < ϵ
 		s.solver_state = OPTIMAL
 		s.primal .= s.z_work
-		s.dual .= s.v_work
+		s.dual .= s.w_work
 		return niters
 	elseif w_delta > ϵ
 		s.solver_state = PRIMAL_INFEASIBLE
