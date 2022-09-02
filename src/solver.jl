@@ -399,7 +399,7 @@ function pipg(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, α::T, ϵ::T, ξ_init:
 		w_prev_delta = w_delta
 		z_prev_delta = z_delta
 		w_delta = norm_err(s.w_work, s.w_prev)
-		z_delta = norm_err(s.w_work, s.w_prev)
+		z_delta = norm_err(s.z_work, s.z_prev)
 		record_diagnostics(s.diagnostics, i, s.w_work, s.z_work, s.ξ_work, w_delta, z_delta)
 		niters = i
 		if w_delta < ϵ && z_delta < ϵ
