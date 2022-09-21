@@ -1,7 +1,17 @@
 abstract type Space{T, D} end	
-struct InfNorm{T, D, δ} <: Space{T, D} end
+struct InfNorm{T, D} <: Space{T, D}
+    δ::Vector{T}
+    InfNorm{T,D}(x) where {T,D} = begin 
+    	@assert length(x) == D
+    	return new{T,D}(x)
+    end
+end
 struct Equality{T, D} <: Space{T, D}
 	v::Vector{T}
+    Equality{T,D}(x) where {T,D} = begin 
+    	@assert length(x) == D
+    	return new{T,D}(x)
+    end
 end
 struct PTSpace{T, Cs<:Tuple{Vararg{C where C<:Space{T}}}, D} <: Space{T, D}
 	cones::Cs
@@ -33,15 +43,17 @@ cone_dim(::Type{C}) where {T, D, C<:Cone{T,D}} = D
 # projections
 project(::Reals{T, D}, x::SVector{D, T}) where {D, T} = x
 project(::Zeros{T, D}, x::SVector{D, T}) where {D, T} = zeros(SVector{D})
-project(::InfNorm{T, D, δ}, x::SVector{D, T}) where {D, T, δ} = clamp.(x, -δ, δ)
-project(e::Equality{T, D}, x::SVector{D, T}) where {D, T, δ} = e.v
+project(i::InfNorm{T, D}, x::SVector{D, T}) where {D, T} = clamp.(x, -i.δ, i.δ)
+project(e::Equality{T, D}, x::SVector{D, T}) where {D, T} = e.v
 
 project!(t, i, ::Reals{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 @inbounds t[j] = x[j] end)
 project!(t, i, ::Zeros{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 @inbounds t[j] = zero(T) end)
-project!(t, i, ::InfNorm{T, D, δ}, x::AbstractArray{T}) where {D, T, δ} = @inbounds (for j in i:i+D-1 @inbounds t[j] = clamp(x[j], -δ, δ) end)
+function project!(t, i, n::InfNorm{T, D}, x::AbstractArray{T}) where {D, T}
+	(for j in i:i+D-1 t[j] = clamp(x[j], -n.δ[j-i+1], n.δ[j-i+1]) end)
+end
 project!(t, i, c::POCone{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 t[j] = max(x[j], zero(T)) end)
 function project!(t, i, e::Equality{T, D}, x::AbstractArray{T}) where {D, T} 
-	@inbounds (for j=i:i+D-1 t[j] = e.v[j] end)
+	(for j=i:i+D-1 @inbounds t[j] = e.v[j] end)
 end
 function project(c::POCone{T, D}, x::SVector{D, T}) where {D, T}
 	return max.(x, zero(T))
@@ -205,6 +217,13 @@ struct Equilibration{T, M, N} <: Scaling{T, M, N}
 	Equilibration(::Problem{T,N,M}) where {T,M,N} = new{T, M, N}(zeros(T, N))
 end
 
+function initialize_like(x::AbstractArray{T}) where T
+	out = similar(x)
+	out .= zero(T)
+	return out
+end
+
+
 @enum SolverState INDEFINITE OPTIMAL PRIMAL_INFEASIBLE DUAL_INFEASIBLE TIMEOUT
 mutable struct State{T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}, G <: Diagnostics{T}, SCs <: Tuple{Vararg{<:Scaling{T, M, N}}}}
 	w_i1::A # M
@@ -227,6 +246,7 @@ mutable struct State{T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}, G <: Diagnostics{T},
 	solver_state::SolverState
 	primal::A # N
 	dual::A # M
+	history::Vector{A}
 
 	diagnostics::G
 	scaling::SCs
@@ -238,13 +258,25 @@ mutable struct State{T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}, G <: Diagnostics{T},
 	col_scale .= one(T)
 	row_scale = similar(p.g)
 	row_scale .= one(T)
+	w_i1 = initialize_like(p.g)
+	ξ_i1 = initialize_like(p.q)
+	z_i2 = initialize_like(p.q)
+	v_i1 = initialize_like(p.g)
+	w_prev = initialize_like(p.g)
+	z_prev = initialize_like(p.q)
+	w_work = initialize_like(p.g)
+	z_work = initialize_like(p.q)
+	η_work = initialize_like(p.g)
+	ξ_work = initialize_like(p.q)
+	primal = initialize_like(p.q)
+	dual = initialize_like(p.g)
 	return new{T,N,M,K,D,A,P,G,SCs}(
-		similar(p.g), similar(p.q), similar(p.q), similar(p.g), 
-		similar(p.g), similar(p.q), 
-		similar(p.g), similar(p.q), 
-		similar(p.g), similar(p.q),
+		w_i1, ξ_i1, z_i2, v_i1, 
+		w_prev, z_prev, 
+		w_work, z_work, 
+		η_work, ξ_work,
 		col_scale, row_scale,
-		INDEFINITE, similar(p.q), similar(p.g), diag, scaling)
+		INDEFINITE, primal, dual, [], diag, scaling)
 	end
 end
 
@@ -255,10 +287,12 @@ function dual_objective_value(p::P, s::State{T,N,M,K,D,A,P}) where {T,N,M,K,D,A,
 	return -transpose(s.primal) * p.P * s.primal * 0.5 - dot(s.dual, p.g)
 end
 
-function compute_α(p::P, γ::T) where {T,N,M,K,D,A,P<:Problem{T,N,M,K,D,A}}
+function compute_α(p::P, γ::T, ω::T=T(2.0)) where {T,N,M,K,D,A,P<:Problem{T,N,M,K,D,A}}
 	λ = max_singular_value(p.P)
 	ν = max_singular_value(p.H)
-	return (8.0-4.0/γ)/(sqrt(λ^2 + 16*ν^2) + λ)
+	α = (2γ)/(sqrt(λ^2 + 4*ω*ν^2) + λ)
+	β = ω * α
+	return α, β
 end
 
 function spmul!(res::MVector{N,T}, A::SparseMatrixCSC{T, Int}, B::StaticVector{M,T}, α::T, β::T) where {T<:Number,N,M}
@@ -286,70 +320,6 @@ function spmul!(res::MVector{N,T}, At::Transpose{T, SparseMatrixCSC{T, Int}}, B:
 	end
 end
 
-function pipg_basic(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, α::T, ϵ::T, z::SVector{N,T}, v::SVector{M,T}) where {T,N,M,K,D,A,P<:Problem{T,N,M,K,D,A}, G<:Diagnostics{T}}
-	w = v
-	w_delta = zero(T)
-	z_delta = zero(T)
-	w_prev_delta = zero(T)
-	z_prev_delta = zero(T)
-	niters = 0
-	for i=1:iters
-		w_prev = w
-		w_raw = v + α*(transpose(p.H) * z - p.g)
-		w = project(polar(p.k), w_raw)
-		z_prev = z
-		z_raw = z - α*(p.P * z + p.q + p.H * w)
-		z = project(p.d, z_raw)
-		v = w + α * transpose(p.H) * (z - z_prev)
-
-		println("iter: $i")
-		println("z: ")
-		println(z)
-		println("z_init: ")
-		println(z_prev)
-		println("w: ")
-		println(w)
-		println("w_init: ")
-		println(w_prev)
-
-		w_prev_delta = w_delta
-		z_prev_delta = z_delta
-		w_delta = norm(w .- w_prev)
-		z_delta = norm(z .- z_prev)
-		niters = i
-		if w_delta < ϵ && z_delta < ϵ
-			w = w_prev
-			z = z_prev
-			break
-		end
-		if isnan(w_delta) || isnan(z_delta)
-			# halt iteration with the previous values of w and z
-			w = w_prev
-			z = z_prev
-			w_delta = w_prev_delta
-			z_delta = z_prev_delta
-			break
-		end
-	end
-	if w_delta < ϵ && z_delta < ϵ
-		s.solver_state = OPTIMAL
-		s.primal .= z
-		s.dual .= v
-		return niters
-	elseif w_delta > ϵ
-		s.solver_state = PRIMAL_INFEASIBLE
-		s.dual .= w ./ norm(w)
-		return niters
-	elseif z_delta > ϵ
-		s.solver_state = DUAL_INFEASIBLE
-		s.primal .= z ./ norm(z)
-		return niters
-	end
-	s.solver_state = TIMEOUT
-	s.primal .= z
-	return niters
-end
-
 function norm_err(a::Vector{T}, b::Vector{T}) where T
 	@assert length(a) == length(b)
 	result = zero(T)
@@ -358,21 +328,25 @@ function norm_err(a::Vector{T}, b::Vector{T}) where T
 	end
 	return sqrt(result)
 end
-function pipg(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, α::T, ϵ::T, ξ_init::A, η_init::A) where {T,N,M,K,D,A,P<:Problem{T,N,M,K,D,A}, G<:Diagnostics{T}}
+function pipg(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, (α,β)::Tuple{T,T}, ϵ::T, ξ_init::A, η_init::A; ρ=T(1.5)) where {T,N,M,K,D,A,P<:Problem{T,N,M,K,D,A}, G<:Diagnostics{T}}
 	@assert length(ξ_init) == N
 	@assert length(η_init) == M
-	ρ = 1.0
-	β = α # for now
 	s.w_prev .= zero(T)
 	s.z_prev .= zero(T)
 	s.w_work .= zero(T)
 	s.z_work .= zero(T)
 	s.ξ_work .= ξ_init
 	s.η_work .= η_init
+	s.ξ_i1 .= zero(T)
+	s.w_i1 .= zero(T)
+	s.primal .= zero(T)
+	s.dual .= zero(T)
 	w_delta = zero(T)
 	z_delta = zero(T)
 	w_prev_delta = zero(T)
 	z_prev_delta = zero(T)
+	β_scale = 1/(β*ρ)
+	α_scale = 1/(α*ρ)
 	niters = 0
 	for i=1:iters
 		s.z_prev .= s.z_work
@@ -383,6 +357,7 @@ function pipg(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, α::T, ϵ::T, ξ_init:
 		z_raw = s.ξ_i1 # z_raw = - α (H^t η + P * ξ + q)
 		z_raw .+= s.ξ_work # z_raw = ξ - α (H^t η + P * ξ + q)
 		project!(s.z_work, 1, p.d, z_raw)
+		z_delta = norm_err(s.z_work, s.z_prev)
 
 		s.w_prev .= s.w_work
 		# s.w_i1 = v + α*(transpose(p.H) * z - p.g) -> ξ + β(H(2z - ξ) - g)
@@ -399,12 +374,15 @@ function pipg(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, α::T, ϵ::T, ξ_init:
 		w_prev_delta = w_delta
 		z_prev_delta = z_delta
 		w_delta = norm_err(s.w_work, s.w_prev)
-		z_delta = norm_err(s.z_work, s.z_prev)
+
 		record_diagnostics(s.diagnostics, i, s.w_work, s.z_work, s.ξ_work, w_delta, z_delta)
 		niters = i
-		if w_delta < ϵ && z_delta < ϵ
+		if β_scale*w_delta < ϵ && α_scale*z_delta < ϵ
 			s.w_work .= s.w_prev
 			s.z_work .= s.z_prev
+			break
+		end
+		if isinf(w_delta) || isinf(z_delta)
 			break
 		end
 		if isnan(w_delta) || isnan(z_delta)
@@ -414,16 +392,16 @@ function pipg(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, α::T, ϵ::T, ξ_init:
 			break
 		end
 	end
-	if w_delta < ϵ && z_delta < ϵ
+	if β_scale*w_delta < ϵ && α_scale*z_delta < ϵ
 		s.solver_state = OPTIMAL
 		s.primal .= s.z_work
 		s.dual .= s.w_work
 		return niters
-	elseif w_delta > ϵ
+	elseif β_scale*w_delta > ϵ || isinf(w_delta)
 		s.solver_state = PRIMAL_INFEASIBLE
 		s.dual .= s.w_work ./ norm(s.w_work)
 		return niters
-	elseif z_delta > ϵ
+	elseif α_scale*z_delta > ϵ || isinf(z_delta)
 		s.solver_state = DUAL_INFEASIBLE
 		s.primal .= s.z_work ./ norm(s.z_work)
 		return niters
@@ -438,7 +416,9 @@ function max_singular_value(m::SparseMatrixCSC{T, Int}; iters=10, ϵ=1e-8) where
 	vect = rand(cols)
 	temp = zeros(rows)
 	for i=1:iters
-		if norm(vect) <= ϵ return norm(vect) end
+		if norm(vect) <= ϵ 
+			return sqrt(norm(vect))
+		end
 		mul!(temp, m, vect)
 		mul!(vect, transpose(m), temp, 1/norm(vect), 0.0)
 	end

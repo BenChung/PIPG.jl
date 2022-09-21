@@ -403,3 +403,21 @@ function col_scale(p::P, s::State{T,N,M,K,D,A,P,G,S}, col_scaling #=::SVector{N,
 	p.q .*= col_scaling
 	s.col_scale .*= col_scaling
 end
+@generated function apply_constraint_scaling!(cs::PTSpace{T, CS}, arg_offs::Int, col_scale::Vector{T}) where {T, CS}
+       len = sum(dim.(CS.parameters))
+       if len == 0
+               return
+       end
+       arr = Any[]
+       offs = 0
+       for (i,cone) in enumerate(CS.parameters)
+               push!(arr, :(apply_constraint_scaling!(cs.cones[$i], arg_offs + $offs, col_scale)))
+               offs += dim(cone)
+       end
+       result = :(begin $(arr...) end)
+       return result
+end
+
+apply_constraint_scaling!(cs::Equality{T, D}, arg_offs::Int, col_scale::Vector{T}) where {T, D} = cs.v ./= col_scale[arg_offs:arg_offs + D - 1]
+apply_constraint_scaling!(i::InfNorm{T, D}, arg_offs::Int, col_scale::Vector{T}) where {T, D} = i.δ ./= col_scale[arg_offs:arg_offs + D - 1]
+apply_constraint_scaling!(::Space{T, D}, arg_offs::Int, col_scale::Vector{T}) where {T, D} = nothing # no-op for the most part

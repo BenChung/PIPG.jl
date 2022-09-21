@@ -854,7 +854,81 @@ end
             T(7), atol=0.01
         )
 end
+ 
+@testset "Dual infeasibility clone" begin 
+    T=Float64
+    opt = PIPG.Optimizer(ϵ=1e-7)
+    model = MOI.Bridges.full_bridge_optimizer(
+        MOI.Utilities.CachingOptimizer(
+            MOI.Utilities.UniversalFallback(MOI.Utilities.Model{Float64}()),
+            opt,
+        ),
+        Float64,
+    )
+    x = MOI.add_variables(model, 5)
+    MOI.set(
+        model,
+        MOI.ObjectiveFunction{MOI.ScalarAffineFunction{T}}(),
+        MOI.ScalarAffineFunction(MOI.ScalarAffineTerm.(T(1), x), T(0)),
+    )
+    MOI.set(model, MOI.ObjectiveSense(), MOI.MIN_SENSE)
+    MOI.optimize!(model)
+    @test MOI.get(model, MOI.TerminationStatus()) == MOI.DUAL_INFEASIBLE
+end
 
+
+@testset "Linear feasibility clone" begin 
+    atol = 1e-5
+    rtol = 1e-5
+    T = Float64
+    opt = PIPG.Optimizer(ϵ=1e-7)
+    model = MOI.Bridges.full_bridge_optimizer(
+        MOI.Utilities.CachingOptimizer(
+            MOI.Utilities.UniversalFallback(MOI.Utilities.Model{Float64}()),
+            opt,
+        ),
+        Float64,
+    )
+    x = MOI.add_variable(model)
+    y = MOI.add_variable(model)
+    c1 = MOI.add_constraint(
+        model,
+        MOI.ScalarAffineFunction{T}(
+            MOI.ScalarAffineTerm{T}.(T[2, 3], [x, y]),
+            T(0),
+        ),
+        MOI.GreaterThan(T(1)),
+    )
+    c2 = MOI.add_constraint(
+        model,
+        MOI.ScalarAffineFunction{T}(
+            MOI.ScalarAffineTerm{T}.(T[1, -1], [x, y]),
+            T(0),
+        ),
+        MOI.EqualTo(T(0)),
+    )
+    MOI.set(model, MOI.ObjectiveSense(), MOI.FEASIBILITY_SENSE)
+    @test MOI.get(model, MOI.ObjectiveSense()) == MOI.FEASIBILITY_SENSE
+        @test MOI.get(model, MOI.TerminationStatus()) == MOI.OPTIMIZE_NOT_CALLED
+        MOI.optimize!(model)
+        @test MOI.get(model, MOI.ResultCount()) > 0
+        @test MOI.get(model, MOI.TerminationStatus()) == MOI.OPTIMAL
+        @test MOI.get(model, MOI.PrimalStatus()) == MOI.FEASIBLE_POINT
+        xsol = MOI.get(model, MOI.VariablePrimal(), x)
+        ysol = MOI.get(model, MOI.VariablePrimal(), y)
+        c1sol = 2 * xsol + 3 * ysol
+        @test c1sol >= 1 || isapprox(c1sol, T(1), atol = atol, rtol = rtol)
+        @test xsol - ysol ≈ T(0) atol = atol rtol = rtol
+        c1primval = MOI.get(model, MOI.ConstraintPrimal(), c1)
+        @test c1primval >= 1 || isapprox(c1sol, T(1), atol = atol, rtol = rtol)
+        @test MOI.get(model, MOI.ConstraintPrimal(), c2) ≈ T(0) atol = atol rtol =
+            rtol
+        @test MOI.get(model, MOI.DualStatus()) == MOI.FEASIBLE_POINT
+        @test MOI.get(model, MOI.ConstraintDual(), c1) ≈ T(0) atol = atol rtol =
+            rtol
+        @test MOI.get(model, MOI.ConstraintDual(), c2) ≈ T(0) atol = atol rtol =
+            rtol
+end
 
     const OPTIMIZER = MOI.instantiate(
         MOI.OptimizerWithAttributes(PIPG.Optimizer, MOI.Silent() => true),
