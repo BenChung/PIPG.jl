@@ -1,6 +1,7 @@
 import MathOptInterface
 const MOI = MathOptInterface
 
+@enum Membership K=1 D=2
 MOI.Utilities.@product_of_sets(
 	Cones,
 	MOI.Zeros,
@@ -29,14 +30,15 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
 	silent::Bool
 	elapsed_time::Float64
 	max_sense::Bool
+	membership::Dict{MOI.ConstraintIndex, Membership}
 
 	scaling
 
 	niters::Int
 	ϵ::Float64
 	γ::Float64
-	function Optimizer(; niters=1000000, ϵ=1e-9, γ=0.999)
-		return new("", nothing, nothing, 0.0, nothing, nothing, false, 0.0, false, nothing, niters, ϵ, γ)
+	function Optimizer(; niters=1000000, ϵ=1e-9, γ=0.9)
+		return new("", nothing, nothing, 0.0, nothing, nothing, false, 0.0, false, Dict{MOI.ConstraintIndex, Membership}(), nothing, niters, ϵ, γ)
 	end
 end
 
@@ -65,6 +67,12 @@ MOI.get(o::Optimizer, ::MOI.SolveTimeSec) = o.elapsed_time
 
 MOI.supports(::Optimizer, ::MOI.ConstraintBasisStatus) = false
 # supported sets
+const SupportedSets = Union{
+	MOI.Zeros,
+	MOI.Nonnegatives,
+	MOI.Nonpositives,
+	MOI.SecondOrderCone
+}
 MOI.supports(::Optimizer, ::Union{
 		MOI.ObjectiveSense, 
 		MOI.ObjectiveFunction{MOI.ScalarQuadraticFunction{Float64}}, 
@@ -72,13 +80,7 @@ MOI.supports(::Optimizer, ::Union{
 MOI.supports_constraint(
 	::Optimizer, 
 	::Type{MOI.VectorAffineFunction{Float64}}, 
-	::Type{<: Union{
-		MOI.Zeros,
-		MOI.Nonnegatives,
-		MOI.Nonpositives,
-		MOI.SecondOrderCone
-	}}) = true
-
+	::Type{<: SupportedSets}) = true
 
 function MOI.modify(
     model::MOI.ModelLike,
@@ -156,23 +158,99 @@ function build_problem(
     	end
     end
 
-    function _map_sets(f, ::Type{T}, sets, ::Type{S}) where {T,S}
-	    F = MOI.VectorAffineFunction{Float64}
-	    cis = MOI.get(sets, MOI.ListOfConstraintIndices{F,S}())
-	    return T[f(MOI.get(sets, MOI.ConstraintSet(), ci)) for ci in cis]
+	cones_K = Cone[]
+	moved = Pair{MOI.ConstraintIndex, Cone}[]
+	if SetMembership() ∈ keys(src.conattr)	
+		dest.membership = copy(src.conattr[SetMembership()])
+		for set in MOI.Utilities.set_types(Ab.sets)
+			cis = MOI.get(Ab, MOI.ListOfConstraintIndices{MOI.VectorAffineFunction{Float64}, set}())
+			for ci in cis 
+				cone = MOI.get(Ab, MOI.ConstraintSet(), ci)
+				if ci in keys(dest.membership) && dest.membership[ci] == D
+					push!(moved, ci => convert_cone(cone))
+				else 
+					push!(cones_K, convert_cone(cone))
+				end
+			end
+		end
+	else 
+		for set in MOI.Utilities.set_types(Ab.sets)
+			cis = MOI.get(Ab, MOI.ListOfConstraintIndices{MOI.VectorAffineFunction{Float64}, set}())
+			for ci in cis 
+				cone = MOI.get(Ab, MOI.ConstraintSet(), ci)
+				push!(cones_K, convert_cone(cone))
+			end
+		end
 	end
-	cones = Cone[]
-	for set in MOI.Utilities.set_types(Ab.sets)
-		append!(cones, _map_sets(convert_cone, Cone, Ab, set))
-	end
-	cones = simplify_cones(cones)
-	println(cones)
-	k = PTCone{Float64}((cones..., ))
-    d = Reals{Float64, A.n}()
-    H = convert(SparseMatrixCSC{Float64, Int64}, A)
-    g = -1 .* Ab.constants
+	cones_K = simplify_cones(cones_K)
+	k = PTCone{Float64}((cones_K..., ))
 
-    p = Problem(k, d, H, P, q, g, objective_constant)
+	if length(moved) > 0
+		cones_d = Cone[]
+		variable_assignment = Array{Union{Nothing, Pair{Int, Float64}}}(nothing, A.n)
+		used_dest_rows = BitSet()
+		used_src_rows = BitSet()
+		offset = 0
+		for (ci, cone) ∈ moved
+			func = MOI.get(Ab, MOI.ConstraintFunction(), ci)
+			total = 0
+			for term ∈ func.terms # we know that func is a VectorAffineFunction
+				if !isnothing(variable_assignment[term.scalar_term.variable.value])
+					throw("repeated variable in sets lifted into D")
+				end
+				if term.output_index + offset ∈ used_dest_rows
+					throw("multiple variables appearing in a single row in D")
+				end
+				if any(abs.(func.constants) .>= 1e-8) 
+					throw("constant terms not allowed for D constraints")
+				end
+				push!(used_dest_rows, term.output_index + offset)
+				variable_assignment[term.scalar_term.variable.value] = (term.output_index + offset) => term.scalar_term.coefficient
+				total += 1
+			end
+			push!.((used_src_rows, ), MOI.Utilities.rows(Ab, ci))
+			if total != dim(cone)
+				throw("Insufficiently specified constraint lifted into D")
+			end
+			push!(cones_d, cone)
+			offset += dim(cone)
+		end
+		remaining = A.n - offset # the number of variables that are not bounded by something explicitly in D
+		if remaining > 0
+			offset += 1 # prep offset for writing all of the remaining variable coefficients
+			for var_num=1:A.n
+				if isnothing(variable_assignment[var_num])
+					variable_assignment[var_num] = offset => 1.0
+					offset += 1
+				end
+			end
+			push!(cones_d, Reals{Float64, remaining}())
+		end
+		scaling = Array{Float64}(undef, A.n)
+		for (var_index, coefficient) in variable_assignment
+			scaling[var_index] = coefficient
+		end
+		A_rows = [false for _ in 1:A.m]
+		g = Float64[]
+		for (row, val) in enumerate(Ab.constants)
+			if !(row ∈ used_src_rows)
+				push!(g, -val)
+				A_rows[row] = true
+			end
+		end
+		d = PTSpace{Float64}((cones_d..., ))
+		H = convert(SparseMatrixCSC{Float64, Int64}, A)
+		H = H[A_rows,:]
+		S = scaling
+	else
+		d = Reals{Float64, A.n}()
+		g = -1 .* Ab.constants
+		H = convert(SparseMatrixCSC{Float64, Int64}, A)
+		S = ones(A.n)
+	end
+
+
+    p = Problem(k, d, H, P, q, g, objective_constant, S)
     if dest.scaling != nothing
     	s = State(p; scaling=dest.scaling(p))
 	else
@@ -224,11 +302,11 @@ function MOI.optimize!(
 		build_problem(dest, src)
 	end
 
-	Ab = src.model.constraints
-	A = Ab.coefficients
+	n = length(dest.problem.q)
+	m = length(dest.problem.g)
 	PIPG.scale(dest.problem, dest.state)
 	α = compute_α(dest.problem, dest.γ)
-    res = @timed pipg(dest.problem, dest.state, dest.niters, α, dest.ϵ, zeros(A.n), zeros(A.m))
+    res = @timed pipg(dest.problem, dest.state, dest.niters, α, dest.ϵ, zeros(n), zeros(m))
     println("niters=$(res[1])")
     dest.elapsed_time = res[2]
 end
@@ -326,4 +404,22 @@ function MOI.get(
     MOI.check_result_index_bounds(optimizer, attr)
     rows = MOI.Utilities.rows(optimizer.cones, ci)
     return .- optimizer.state.dual[rows] .* optimizer.state.row_scale[rows]
+end
+
+
+struct SetMembership <: MOI.AbstractConstraintAttribute end
+function MOI.set(model::Optimizer, ::SetMembership, c::MOI.ConstraintIndex, m::Membership)
+	println("set membership! $c $m")
+	model.membership[c] = m
+end
+MOI.supports(::Optimizer, ::SetMembership, ::MOI.ConstraintIndex{MOI.VectorAffineFunction,T}) where T<: SupportedSets = true
+function MOI.set(model::MOI.ModelLike, attr::SetMembership, bridge::T, m::Membership) where T<:MOI.Bridges.AbstractBridge
+	for (F,S) in MOI.Bridges.added_constraint_types(T)
+		for ci in MOI.get(bridge, MOI.ListOfConstraintIndices{F,S}())
+			MOI.set(model, attr, ci, m)
+		end
+	end
+end
+function MOI.get(model::Optimizer, ::SetMembership, c::MOI.ConstraintIndex)
+	return model.membership[c]
 end
