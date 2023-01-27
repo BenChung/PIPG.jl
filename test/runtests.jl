@@ -7,110 +7,167 @@ using Profile
 const MOI = MathOptInterface
 using Test
 
+@testset "Ruiz Equilibration" begin 
+    make_prob() = PIPG.Problem(PIPG.PTCone{Float64}((PIPG.SignCone{Float64, 1}(true), PIPG.SignCone{Float64, 1}(true), PIPG.SignCone{Float64, 1}(true), 
+        PIPG.SignCone{Float64, 2}(true))), PIPG.Reals{Float64, 2}(), 
+        sparse([-100.0 -200.0; -10.0 -30.0; -1.0 -1.0; 1.0 0.0; 0.0 1.0]), 
+        spzeros(2,2), 
+        -1 .* [50.0, 120.0], 
+        [-10000.0, -1200.0, -110, -0.0, -0.0], 0.0)
+	prob = make_prob()
+	state = PIPG.State(prob; scaling=())
+    PIPG.scale!(prob, state)
+	γ = 0.9
+	niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0])
+    println(niters)
+	@test norm(state.col_scale .* state.primal .- [60, 20]) < 0.01
 
-@testset "Masses raw" begin
-    t = 20
-    l = 32
-    x0 = repeat([0.1, 0.0], l)
-    Pd = 3*l*t + 2*l
-    P = sparse(1.0I, Pd, Pd)
-    q = zeros(3*t*l + 2*l)
-    Hd = 2*l*t
-    L = Tridiagonal(repeat([-1], l-1),repeat([2], l), repeat([-1], l-1))
-    Δ = 0.1
-    Ac = [zeros(l,l) 1.0I(l); -L zeros(l,l)]
-    A = exp(collect(Δ*Ac))
-    Bc = [zeros(l,l); 1.0I(l)]
-    B = Ac\((A - I(2*l))*Bc)
-    H = [([zeros(2*l*t, 2*l) sparse(I, Hd, Hd)]-[kron(I(t), A) zeros(2*l*t, 2*l)]) -kron(I(t), B)]
-    g = zeros(2*l*t)
-    K = PIPG.Zeros{Float64, 2*t*l}()
-    ρx = 1.0
-    ρu = 0.5
-    Xes = [PIPG.InfNorm{Float64, 2*l}([ρx for i=1:2*l]) for j=1:t-1]
-    Us = [PIPG.InfNorm{Float64, l}([ρu for i=1:l]) for j=1:t]
-    D = PIPG.PTSpace{Float64}((PIPG.Equality{Float64, 2*l}(x0), Xes..., PIPG.Zeros{Float64, 2*l}(), Us...))
-    prob = PIPG.Problem(K, D, sparse(H), sparse(P), q, g, 0.0)
-    state = PIPG.State(prob; scaling=(PIPG.ArithMean(prob), PIPG.Equilibration(prob), ))
-    #PIPG.scale!(prob, state)
-    #PIPG.apply_constraint_scaling!(prob.d, 1, state.col_scale)
-    α, β = PIPG.compute_α(prob, 0.95, 195.0)
-    a = zeros(3*t*l + 2*l)
-    b = zeros(2*l*t)
-    a .= 0.0
-    b .= 0.0
-    niters = PIPG.pipg(prob, state, 10000, (α, β), 1e-7, a, b, ρ=1.55)
+    make_prob_plane() = PIPG.Problem(PIPG.PTCone{Float64}(( 
+        PIPG.SignCone{Float64, 1}(true), 
+        PIPG.SignCone{Float64, 1}(true), 
+        PIPG.SignCone{Float64, 2}(true))), PIPG.HalfspaceCone{Float64, 2}([100.0, 200.0], 10000.0), 
+        sparse([-10.0 -30.0; -1.0 -1.0; 1.0 0.0; 0.0 1.0]), 
+        spzeros(2,2), 
+        -1 .* [50.0, 120.0], 
+        [ -1200.0, -110, -0.0, -0.0], 0.0)
+    prob = make_prob_plane()
+    state = PIPG.State(prob; scaling=())
+    PIPG.scale!(prob, state)
+	niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0, 0.0, 0.0, 0.0])
+	@test norm(state.col_scale .* state.primal .- [60, 20]) < 0.01
+    println(niters)
+end
+
+@testset "Ruiz Equilibration SOCP" begin 
+    make_prob() = PIPG.Problem(PIPG.SOCone{Float64, 2}(1.0), PIPG.PTSpace{Float64}((PIPG.Equality{Float64, 1}([1.0]), PIPG.Reals{Float64, 1}())), 
+        sparse([1.0 0.0; 0.0 2.0]), 
+        spzeros(2,2), 
+        -1 .* [0.0, 1.0], 
+        [0.0, 0.0], 0.0)
+    prob = make_prob()
+    state = PIPG.State(prob; scaling=())
+    PIPG.scale!(prob, state)
+    γ = 0.9
+    niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0, 0.0])
+    @test norm(state.col_scale .* state.primal .- [1.0, 0.5]) < 0.01
+    
+	γ = 0.9
+	# QP example
+    function make_qp()
+    	P_ex = spdiagm([1/MathConstants.e, 2.0])
+    	q = [1/MathConstants.e,2.0]
+    	H_ex = sparse([-1.0 -1.0])
+    	g = [0.0]
+    	return PIPG.Problem(PIPG.SignCone{Float64, 1}(false), PIPG.Reals{Float64, 2}(), H_ex, P_ex, q, g, 0.0)
+    end
+	
+    # no scaling
+    prob = make_qp()
+    state = PIPG.State(prob; scaling=())
+    PIPG.scale!(prob, state)
+	PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [1.0, 1.0], [0.0])
+    result = state.col_scale .* state.primal
+	@test norm(result .- [0.689, -0.689]) < 0.001
+
+    
+    function make_basic_qp()
+    	P_ex = sparse([1, 2, 3, 1, 2, 3, 1, 2, 3], [1, 1, 1, 2, 2, 2, 3, 3, 3], [5.0, -2.0, -1.0, -2.0, 4.0, 3.0, -1.0, 3.0, 5.0], 3, 3)
+    	q = [2.0, -35.0, -47.0]
+    	H_ex = sparse(Int64[], Int64[], Float64[], 0, 3)
+    	g = Float64[]
+    	return PIPG.Problem(PIPG.SignCone{Float64, 0}(false), PIPG.Reals{Float64, 3}(), H_ex, P_ex, q, g, 5.0)
+    end
+	
+    # no scaling
+    prob = make_basic_qp()
+    state = PIPG.State(prob; scaling=())
+    PIPG.scale!(prob, state)
+	PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [1.0, 1.0, 1.0], Float64[])
+    result = state.col_scale .* state.primal
+	@test norm(result .- [3, 5, 7]) < 0.001
 end
 
 @testset "Projections" begin
-    @test PIPG.project(PIPG.POCone{Float64, 4}(), SVector(0.0, -4.0, 4.0, -10.0)) == [0.0, 0.0, 4.0, 0.0]
-
     long_inp = [zeros(6)..., 0, -4.0, 4.0, -10.0]
     res = zeros(4)
-    PIPG.project!(res, 1, PIPG.POCone{Float64, 4}(), SVector(0.0, -4.0, 4.0, -10.0), ones(4))
+    PIPG.project!(res, 1, PIPG.SignCone{Float64, 4}(true), SVector(0.0, -4.0, 4.0, -10.0))
     @test res == MVector(0.0, 0.0, 4.0, 0.0)
     res = zeros(4)
-    PIPG.project!(res, 1, PIPG.POCone{Float64, 4}(), SVector(0.0, -4.0, 4.0, -10.0), -ones(4))
+    PIPG.project!(res, 1, PIPG.SignCone{Float64, 4}(false), SVector(0.0, -4.0, 4.0, -10.0))
+    @test res == MVector(0.0, -4.0, 0.0, -10.0)
+    PIPG.project!(res, 1, PIPG.polar(PIPG.SignCone{Float64, 4}(true)), SVector(0.0, -4.0, 4.0, -10.0))
     @test res == MVector(0.0, -4.0, 0.0, -10.0)
     res = zeros(10)
-    PIPG.project!(res, 7, PIPG.POCone{Float64, 4}(), long_inp, ones(10))
-    @test res == (vcat(zeros(6), PIPG.project(PIPG.POCone{Float64, 4}(), SVector(0.0, -4.0, 4.0, -10.0))))
-    
-    @test PIPG.project(PIPG.NOCone{Float64, 4}(), SVector(0.0, -4.0, 4.0, -10.0)) == [0.0, -4.0, 0.0, -10.0]
-    res = zeros(4)
-    PIPG.project!(res, 1, PIPG.NOCone{Float64, 4}(), SVector(0.0, -4.0, 4.0, -10.0), ones(4))
-    @test res == MVector(0.0, -4.0, 0.0, -10.0)
-    res = zeros(4)
-    PIPG.project!(res, 1, PIPG.NOCone{Float64, 4}(), SVector(0.0, -4.0, 4.0, -10.0), -ones(4))
-    @test res == MVector(0.0, 0.0, 4.0, 0.0)
-    res = zeros(10)
-    PIPG.project!(res, 7, PIPG.NOCone{Float64, 4}(), long_inp, ones(10))
-    @test res == (vcat(zeros(6), PIPG.project(PIPG.NOCone{Float64, 4}(), SVector(0.0, -4.0, 4.0, -10.0))))
+    PIPG.project!(res, 7, PIPG.SignCone{Float64, 4}(true), long_inp)
+    @test res == [zeros(6); [0, 0, 4, 0]]
 
     soc_project = [7.744562646538029, -2.696310623822791, 2.696310623822791, -6.740776559556978]
-    @test PIPG.project(PIPG.SOCone{Float64, 4}(), SVector(4.0, -4.0, 4.0, -10.0)) ≈ soc_project
     res = zeros(4)
-    PIPG.project!(res, 1, PIPG.SOCone{Float64, 4}(), [4.0, -4.0, 4.0, -10.0], ones(4))
+    PIPG.project!(res, 1, PIPG.SOCone{Float64, 4}(1.0), [4.0, -4.0, 4.0, -10.0])
     @test res ≈ soc_project
     res = zeros(10)
     long_inp = [zeros(6)..., 4.0, -4.0, 4.0, -10.0]
-    PIPG.project!(res, 7, PIPG.SOCone{Float64, 4}(), long_inp, ones(10))
+    PIPG.project!(res, 7, PIPG.SOCone{Float64, 4}(1.0), long_inp)
     @test res ≈ (vcat(zeros(6), soc_project))
 
     nsoc_project = [-7.744562646538029, -2.696310623822791, 2.696310623822791, -6.740776559556978]
-    @test PIPG.project(PIPG.NSOCone{Float64, 4}(), SVector(-4.0, -4.0, 4.0, -10.0)) ≈ nsoc_project
     res = zeros(4)
-    PIPG.project!(res, 1, PIPG.NSOCone{Float64, 4}(), [-4.0, -4.0, 4.0, -10.0], ones(4))
+    PIPG.project!(res, 1, PIPG.SOCone{Float64, 4}(-1.0), [-4.0, -4.0, 4.0, -10.0])
     @test res ≈ nsoc_project
     res = zeros(10)
     long_inp = [zeros(6)..., -4.0, -4.0, 4.0, -10.0]
-    PIPG.project!(res, 7, PIPG.NSOCone{Float64, 4}(), long_inp, ones(10))
+    PIPG.project!(res, 7, PIPG.SOCone{Float64, 4}(-1.0), long_inp)
     @test res ≈ (vcat(zeros(6), nsoc_project))
 
     combined = [-1.0, 1.0, -1.0, 1.0]
     long_combined = [zeros(6); combined]
     result = [0.0, 1.0, -1.0, 0.0]
-    cone = PIPG.PTCone{Float64}((PIPG.POCone{Float64, 2}(), PIPG.NOCone{Float64, 2}()))
-    @test PIPG.project(cone, SVector{4}(combined)) ≈ result
+    cone = PIPG.PTCone{Float64}((PIPG.SignCone{Float64, 2}(true), PIPG.SignCone{Float64, 2}(false)))
     res = zeros(4)
-    PIPG.project!(res, 1, cone, combined, ones(4))
+    PIPG.project!(res, 1, cone, combined)
     @test res ≈ result
     res = zeros(10)
     combined = [zeros(6)..., -1.0, 1.0, -1.0, 1.0]
-    PIPG.project!(res, 7, cone, combined, ones(10))
+    PIPG.project!(res, 7, cone, combined)
     @test res ≈ (vcat(zeros(6), result))
+    
+    cone = PIPG.HalfspaceCone{Float64, 2}([1.0, 0.0], 1.0)
+    res = zeros(2)
+    PIPG.project!(res, 1, cone, [0.0, 1.0])
+    @test res ≈ [0.0, 1.0]
+    PIPG.project!(res, 1, cone, [2.0, 1.0])
+    @test res ≈ [1.0, 1.0]
+    res = zeros(10)
+    combined = [zeros(8); 2.0; 1.0]
+    PIPG.project!(res, 9, cone, combined)
+    @test res ≈ [zeros(8); 1.0; 1.0]
+end
+
+@testset "Linear algebra routines" begin 
+    for i=1:100
+        res = MVector{10,Float64}(zeros(10))
+        mat = sprand(10,10,0.5)
+        inp = SVector{10, Float64}(rand(10))
+        PIPG.spmul!(res, mat, inp, 1.0, 0.0)
+        @test all(abs.(res .- mat*inp) .< 1e-10)
+        PIPG.spmul!(res, mat, inp, 1.0, -1.0)
+        @test all(abs.(res) .< 1e-10)
+        PIPG.spmul!(res, mat, inp, -1.0, 0.0)
+        @test all(abs.(res .+ mat*inp) .< 1e-10)
+    end
 end
 
 
 @testset "Moving from K to D" begin 
 	γ = 0.9
-    prob = PIPG.Problem(PIPG.PTCone{Float64}((PIPG.POCone{Float64, 1}(), PIPG.POCone{Float64, 1}(), PIPG.POCone{Float64, 1}())), PIPG.NOCone{Float64, 2}(), 
-        sparse([-100.0 -200.0; -10.0 -30.0; -1.0 -1.0]), 
+    prob = PIPG.Problem(PIPG.SignCone{Float64, 3}(false), PIPG.SignCone{Float64, 2}(true), 
+        sparse([1.0 2.0; 1.0 3.0; 1.0 1.0]), 
         spzeros(2,2), 
-        -1 .* [50.0, 120.0], 
-        [-10000.0, -1200.0, -110], 0.0, [-1.0, -1.0])
+        [-50.0, -120.0], 
+        [100.0, 120.0, 110.0], 0.0)
 	state = PIPG.State(prob; scaling=())
 	PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0, 0.0, 0.0])
+    println(state.primal)
 	@test norm(state.primal .- [60, 20]) < 0.01
 
 
@@ -145,68 +202,41 @@ end
     @test MOI.get(model, MOI.DualStatus()) == MOI.FEASIBLE_POINT
     @test MOI.get(model, MOI.TerminationStatus()) == MOI.OPTIMAL
     @test norm(MOI.get.(model, MOI.VariablePrimal(), x)  .- [60, 20]) < 0.01
-
 end
 
-@testset "Scalings" begin
-    K = PIPG.POCone{Float64, 3}()
-    D = PIPG.Reals{Float64, 3}()
-    H = [1.0 0.5 0.25; 0.5 1.0 0.25; 0.5 0.25 1.0]
-    P = [1.0 2 3; 4.0 5 6; 7 8 9]
-    q = [1.0, 1.0, 1.0]
-    g = [1.0, 1.0, 1.0]
-    p = PIPG.Problem(K, D, sparse(H), sparse(P), q, g, 0.0)
-    @test ≈(PIPG.row_scaling(p, PIPG.ArithMean(p), 0, PIPG.Reals{Float64, 3}()), [1.7142, 1.7142, 1.7142], atol=0.01)
-    @test ≈(PIPG.row_scaling(p, PIPG.ArithMean(p), 0, PIPG.SOCone{Float64, 3}()), [0.5714, 0.5714, 0.5714], atol=0.01)
-    @test ≈(PIPG.row_scaling(p, PIPG.GeoMean(p), 0, PIPG.Reals{Float64, 3}()), [2.0, 2.0, 2.0], atol=0.01)
-    @test ≈(PIPG.row_scaling(p, PIPG.GeoMean(p), 0, PIPG.SOCone{Float64, 3}()),[2.0, 2.0, 2.0], atol=0.01)
-    @test ≈(PIPG.row_scaling(p, PIPG.Equilibration(p), 0, PIPG.Reals{Float64, 3}()), [1.0, 1.0, 1.0], atol=0.01)
-    @test ≈(PIPG.row_scaling(p, PIPG.Equilibration(p), 0, PIPG.SOCone{Float64, 3}()), [0.333, 0.333, 0.333], atol=0.01)
-    @test ≈(PIPG.col_scaling(p, PIPG.ArithMean(p)), [1.5, 1.714, 2.0], atol=0.01)
-    @test ≈(PIPG.col_scaling(p, PIPG.GeoMean(p)),[0.816, 0.894, 0.894], atol=0.01)
-    @test ≈(PIPG.col_scaling(p, PIPG.Equilibration(p)), [1.0, 1.0, 1.0], atol=0.01)
-    out = zeros(3)
-    PIPG.row_scaling!(out, p, PIPG.ArithMean(p), 0, PIPG.Reals{Float64, 3}())
-    @test ≈(out, [1.7142, 1.7142, 1.7142], atol=0.01)
-    out = zeros(3)
-    PIPG.row_scaling!(out, p, PIPG.ArithMean(p), 0, PIPG.SOCone{Float64, 3}())
-    @test ≈(out, [0.5714, 0.5714, 0.5714], atol=0.01)
-    
-    out = zeros(3)
-    PIPG.row_scaling!(out, p, PIPG.GeoMean(p), 0, PIPG.Reals{Float64, 3}())
-    @test ≈(out, [2.0, 2.0, 2.0], atol=0.01)
-    out = zeros(3)
-    PIPG.row_scaling!(out, p, PIPG.GeoMean(p), 0, PIPG.SOCone{Float64, 3}())
-    @test ≈(out, [2.0, 2.0, 2.0], atol=0.01)
-    
-    out = zeros(3)
-    PIPG.row_scaling!(out, p, PIPG.Equilibration(p), 0, PIPG.Reals{Float64, 3}())
-    @test ≈(out, [1.0, 1.0, 1.0], atol=0.01)
-    out = zeros(3)
-    PIPG.row_scaling!(out, p, PIPG.Equilibration(p), 0, PIPG.SOCone{Float64, 3}())
-    @test ≈(out, [0.333, 0.333, 0.333], atol=0.01)
-
-    out = zeros(3)
-    PIPG.col_scaling!(out, p, PIPG.ArithMean(p))
-    @test ≈(out, [1.5, 1.714, 2.0], atol=0.01)
-    PIPG.col_scaling!(out, p, PIPG.GeoMean(p))
-    @test ≈(out,[0.816, 0.894, 0.894], atol=0.01)
-    PIPG.col_scaling!(out, p, PIPG.Equilibration(p))
-    @test ≈(out, [1.0, 1.0, 1.0], atol=0.01)
-end
-
-@testset "Linear algebra routines" begin 
-    for i=1:100
-        res = MVector{10,Float64}(zeros(10))
-        mat = sprand(10,10,0.5)
-        inp = SVector{10, Float64}(rand(10))
-        PIPG.spmul!(res, mat, inp, 1.0, 0.0)
-        @test all(abs.(res .- mat*inp) .< 1e-10)
-        PIPG.spmul!(res, mat, inp, 1.0, -1.0)
-        @test all(abs.(res) .< 1e-10)
-        PIPG.spmul!(res, mat, inp, -1.0, 0.0)
-        @test all(abs.(res .+ mat*inp) .< 1e-10)
-    end
+@testset "Masses raw" begin
+    t = 20
+    l = 32
+    x0 = repeat([0.1, 0.0], l)
+    Pd = 3*l*t + 2*l
+    P = sparse(1.0I, Pd, Pd)
+    q = zeros(3*t*l + 2*l)
+    Hd = 2*l*t
+    L = Tridiagonal(repeat([-1], l-1),repeat([2], l), repeat([-1], l-1))
+    Δ = 0.1
+    Ac = [zeros(l,l) 1.0I(l); -L zeros(l,l)]
+    A = exp(collect(Δ*Ac))
+    Bc = [zeros(l,l); 1.0I(l)]
+    B = Ac\((A - I(2*l))*Bc)
+    H = [([zeros(2*l*t, 2*l) sparse(I, Hd, Hd)]-[kron(I(t), A) zeros(2*l*t, 2*l)]) -kron(I(t), B)]
+    g = zeros(2*l*t)
+    K = PIPG.Zeros{Float64, 2*t*l}()
+    ρx = 1.0
+    ρu = 0.5
+    Xes = [PIPG.InfNorm{Float64, 2*l}([ρx for i=1:2*l]) for j=1:t-1]
+    Us = [PIPG.InfNorm{Float64, l}([ρu for i=1:l]) for j=1:t]
+    D = PIPG.PTSpace{Float64}((PIPG.Equality{Float64, 2*l}(x0), Xes..., PIPG.Zeros{Float64, 2*l}(), Us...))
+    prob = PIPG.Problem(K, D, sparse(H), sparse(P), q, g, 0.0)
+    state = PIPG.State(prob; scaling=(PIPG.ArithMean(prob), PIPG.Equilibration(prob), ))
+    PIPG.scale!(prob, state)
+    #PIPG.apply_constraint_scaling!(prob.d, 1, state.col_scale)
+    α, β = PIPG.compute_α(prob, 0.95, 195.0)
+    a = zeros(3*t*l + 2*l)
+    b = zeros(2*l*t)
+    a .= 0.0
+    b .= 0.0
+    niters = PIPG.pipg(prob, state, 10000, (α, β), 1e-7, a, b, ρ=1.55)
+    println(niters)
 end
 
 
@@ -218,7 +248,7 @@ end
     	q = [1/MathConstants.e,2.0]
     	H_ex = sparse([-1.0 -1.0])
     	g = [0.0]
-    	return PIPG.Problem(PIPG.NOCone{Float64, 1}(), PIPG.Reals{Float64, 2}(), H_ex, P_ex, q, g, 0.0)
+    	return PIPG.Problem(PIPG.SignCone{Float64, 1}(false), PIPG.Reals{Float64, 2}(), H_ex, P_ex, q, g, 0.0)
     end
 	
     # no scaling
@@ -229,8 +259,8 @@ end
 	@test norm(result .- [0.689, -0.689]) < 0.001
 
 	# LP example
-    make_prob() = PIPG.Problem(PIPG.PTCone{Float64}((PIPG.POCone{Float64, 1}(), PIPG.POCone{Float64, 1}(), PIPG.POCone{Float64, 1}(), 
-        PIPG.POCone{Float64, 2}())), PIPG.Reals{Float64, 2}(), 
+    make_prob() = PIPG.Problem(PIPG.PTCone{Float64}((PIPG.SignCone{Float64, 1}(true), PIPG.SignCone{Float64, 1}(true), PIPG.SignCone{Float64, 1}(true), 
+        PIPG.SignCone{Float64, 2}(true))), PIPG.Reals{Float64, 2}(), 
         sparse([-100.0 -200.0; -10.0 -30.0; -1.0 -1.0; 1.0 0.0; 0.0 1.0]), 
         spzeros(2,2), 
         -1 .* [50.0, 120.0], 
@@ -240,6 +270,7 @@ end
 	PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0])
 	@test norm(state.primal .- [60, 20]) < 0.01
 
+    #=
     # geometric scaling
     prob = make_prob()
     state = PIPG.State(prob; scaling=(PIPG.GeoMean(prob), ))
@@ -343,6 +374,7 @@ end
     PIPG.scale!(prob, state)
     niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.00001, [0.0, 0.0], [0.0])
     @test norm(state.primal .* state.col_scale .- [0.689, -0.689]) < 0.001
+    =#
 end
 #=
 @testset "Profiling" begin 
@@ -462,7 +494,6 @@ end
     @test norm(MOI.get.(model, MOI.VariablePrimal(), x)  .- [42.881, 25.706]) < 0.01
 end
 
-
 @testset "Trivial QP" begin
     opt = PIPG.Optimizer()
     model = MOI.Bridges.full_bridge_optimizer(
@@ -472,7 +503,6 @@ end
         ),
         Float64,
     )
-
 	P_ex = spdiagm([1/MathConstants.e, 2.0])
 	q = SVector(1/MathConstants.e,2.0)
 	H_ex = sparse([-1.0 -1.0])
@@ -597,7 +627,7 @@ PIPG.pipg(prob, state, 100000000, α, 1e-5, SVector{2, Float64}(zeros(2)), SVect
 
 @testset "LP scalar modification" begin
     opt = PIPG.Optimizer()
-    opt.niters *= 10
+    opt.niters *= 100
     model = MOI.Bridges.full_bridge_optimizer(
         MOI.Utilities.CachingOptimizer(
             MOI.Utilities.UniversalFallback(MOI.Utilities.Model{Float64}()),

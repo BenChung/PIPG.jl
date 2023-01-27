@@ -1,397 +1,130 @@
-@generated function scale(p::P, s::State{T,N,M,K,D,A,P,G,SC}) where {T,N,M,K,D,A,
-	P <: Problem{T,N,M,K,D,A},
-	SC <: Tuple{Vararg{<:Scaling{T, M, N}}},G}
-	scale_ast = [quote
-		row_scale(p, s, row_scaling(p, s.scaling[$i], 0, p.k))
-		col_scale(p, s, col_scaling(p, s.scaling[$i]))
-	end for (i, sc) in enumerate(SC.parameters) ]
-	return quote $(scale_ast...) end
-end
-@generated function scale!(p::P, s::State{T,N,M,K,D,A,P,G,SC}) where {T,N,M,K,D,A,
-	P <: Problem{T,N,M,K,D,A},
-	SC <: Tuple{Vararg{<:Scaling{T, M, N}}},G}
-	scale_ast = [quote
-		row_scaling!(s.η_work, p, s.scaling[$i], 0, p.k)
-		row_scale(p, s, s.η_work)
-		col_scaling!(s.ξ_work, p, s.scaling[$i])
-		col_scale(p, s, s.ξ_work)
-	end for (i, sc) in enumerate(SC.parameters) ]
-	return quote $(scale_ast...) end
+#=
+todo:
+See pages 11-13 to see how OSQP does it (for QPs): https://arxiv.org/pdf/1711.08013.pdf
+See page 1057 to get a rough idea for how SCS does it (for conic problems): https://link.springer.com/content/pdf/10.1007/s10957-016-0892-3.pdf
+
+I’ll share the manuscript with new preconditioner (that worked better than OSQP’s in my experiments) as soon as we’ve finished writing it (in the next week or so) (edited) 
+=#
+function scale!(p::P, s::State{T,N,M,K,D,A,P,G,SC}) where {T,N,M,K,D,A, P <: Problem{T,N,M,K,D,A}, G, SC}
+	Ds = ones(N)
+	Ps = ones(M) # P is analogous to E in the OSQP paper 
+	δD = ones(N)
+	δK = ones(M)
+	H_rowmaxes = zeros(M)
+	H_colmaxes = zeros(N)
+	P_colmaxes = zeros(N)
+	P_rowmaxes = zeros(N)
+	c = 1
+	for i=1:10
+		H_rowmaxes .= zero(T); H_colmaxes .= zero(T)
+		P_colmaxes .= zero(T); P_rowmaxes .= zero(T)
+		compute_maxvals(H_rowmaxes, H_colmaxes, p.H, Ds, Ps)
+		compute_maxvals(P_colmaxes, P_rowmaxes, p.P, Ds, Ds) 
+		P_colmaxes .*= c
+		notzero(n) = n == zero(T) ? one(T) : n
+		δD .= 1 ./ notzero.(sqrt.(max.(H_colmaxes, P_colmaxes)))
+		δK .= 1 ./ notzero.(sqrt.(H_rowmaxes))
+		#println("Ds: $Ds Ps: $Ps")
+		#println("delta D len: $(length(δD)) delta K len: $(length(δK)) M: $M N $N")
+		#println("H_rowmaxes: $H_rowmaxes H_colmaxes: $H_colmaxes P_colmaxes: $P_colmaxes")
+		constrain!(K, δK, 0)
+		colmean = M > 0 ? sum(@~ P_colmaxes .* δD .* δD ./ M) : zero(T)
+		#println("δD: $δD δK: $δK cm: $colmean") 
+		Ds .*= δD
+
+		δD .*= c
+		δD .*= abs.(p.q)
+		γ = 1 / notzero(max(colmean, maximum(δD)))
+		c *= γ
+		Ps .*= δK
+	end
+	Ds .= one(T)
+	apply_scaling!(p, s, Ps, Ds)
 end
 
-function maxmin_abs(v::AbstractArray{T}) where T
-	minv, maxv = typemax(T), typemin(T)
-	for val in v
-		minv, maxv = min(minv, abs(val)), max(maxv, abs(val))
-	end
-	return minv, maxv
+function compute_maxvals(H_colmaxes, H_rowmaxes, mat::SparseMatrixCSC{T, Int}, row_scaling, col_scaling) where T
+	N, M = size(mat)
+	#H_colmaxes = zeros(M)
+	#H_rowmaxes = zeros(N)
+	rows = rowvals(mat)
+	vals = nonzeros(mat)
+	for col = 1:M for i in nzrange(mat, col)
+		row = rows[i]
+		val = vals[i] * row_scaling[row] * col_scaling[col]
+		H_rowmaxes[row] = max(H_rowmaxes[row], abs(val))
+		H_colmaxes[col] = max(H_colmaxes[col], abs(val))
+	end end
 end
 
-@generated function row_scaling!(
-	output::Vector{T},
-	p::P,
-	s::Scaling{T,M,N}, 
-	arg_offs::Int,
-	cs::PTCone{T, CS}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CS}
-	len = sum(cone_dim.(CS.parameters))
-	if N == 0 || M == 0
-		return :(output[arg_offs:arg_offs+len] .= one(T))
+@generated function constrain!(::Type{<:PTCone{T, CS}}, vector::Vector{T}, offs) where {T,CS}
+	out = :(begin end)
+	current_offs = 0
+	for cone in CS.parameters
+		push!(out.args, :(constrain!($cone, vector, offs+$current_offs)))
+		current_offs += cone_dim(cone)
 	end
-	arr = Any[]
-	offs = 0
-	for (i,cone) in enumerate(CS.parameters)
-		push!(arr, :(row_scaling!(output, p, s, arg_offs + $offs, cs.cones[$i])))
-		offs += cone_dim(cone)
-	end
-	return :(begin $(arr...) end)
+	return out
 end
-
-@generated function row_scaling(p::P, 
-	s::Scaling{T,M,N}, 
-	arg_offs::Int,
-	cs::PTCone{T, CS}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CS}
-	if N == 0 || M == 0
-		return :(ones(SVector{M, T}))
-	end
-	arr = Any[]
-	offs = 0
-	for (i,cone) in enumerate(CS.parameters)
-		push!(arr, :(row_scaling(p, s, arg_offs + $offs, cs.cones[$i])))
-		offs += cone_dim(cone)
-	end
-	return :(vcat($(arr...)))
-end
-function col_scaling(p::P, s::ArithMean{T,M,N}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}}
-	if N == 0 || M == 0
-		return ones(SVector{N, T})
-	end
-	s.colsum .= zero(T)
-	cols = rowvals(p.H)
-	vals = nonzeros(p.H)
-	for j = 1:M
-		for nz in nzrange(p.H, j) 
-			col = cols[nz]
-			val = vals[nz]
-			@inbounds s.colsum[col] += abs(val)
-		end
-	end
-	for i in 1:length(s.colsum)
-		@inbounds if s.colsum[i] == zero(T)
-			@inbounds s.colsum[i] = one(T)
-		else 
-			@inbounds s.colsum[i] = M / s.colsum[i]
-		end
-	end
-
-	return SVector{N}(s.colsum)
-end
-function col_scaling!(output, p::P, s::ArithMean{T,M,N}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}}
-	if N == 0 || M == 0
-		output .= one(T)
-	end
-	output .= zero(T)
-	cols = rowvals(p.H)
-	vals = nonzeros(p.H)
-	for j = 1:M
-		for nz in nzrange(p.H, j) 
-			col = cols[nz]
-			val = vals[nz]
-			@inbounds output[col] += abs(val)
-		end
-	end
-	for i in 1:length(output)
-		@inbounds if output[i] == zero(T)
-			@inbounds output[i] = one(T)
-		else 
-			@inbounds output[i] = M / output[i]
-		end
-	end
-end
-
-function row_scaling!(
-	output::Vector{T},
-	p::P, 
-	s::ArithMean{T,M,N}, 
-	offs::Int,
-	::Union{Reals{T, CD}, Zeros{T, CD}, POCone{T, CD}, NOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CD}
-	cols = rowvals(p.H)
-	vals = nonzeros(p.H)
-	for j in 1:CD
-		output[offs + j] = N/sum(@~ abs.(@view vals[nzrange(p.H, j+offs)]))
-	end
-end
-function row_scaling!(
-	output::Vector{T},
-	p::P, 
-	s::ArithMean{T,M,N}, 
-	offs::Int,
-	::Union{SOCone{T, CD}, NSOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CD} 
-	cols = rowvals(p.H)
-	vals = nonzeros(p.H)
+function constrain!(::Type{<:Union{Reals{T,D}, Zeros{T,D}, SignCone{T,D}, HalfspaceCone{T, D}}}, ::Vector{T}, offs) where {T, D} end
+function constrain!(::Type{SOCone{T, D}}, v::Vector{T}, offs) where {T, D} 
 	total = zero(T)
-	for j in 1:CD
-		for ind in nzrange(p.H, j+offs)
-			total += abs(vals[ind])
-		end
+	for i=2+offs:offs+D
+		total += v[i]
 	end
-	for j in 1:CD
-		output[j + offs] = N/total
-	end
+	mean = total/(D-1)
+	for i=2+offs:offs+D
+		v[i] = mean
+ 	end
 end
 
-@generated function row_scaling(p::P, 
-	s::ArithMean{T,M,N}, 
-	offs::Int,
-	::Union{Reals{T, CD}, Zeros{T, CD}, POCone{T, CD}, NOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CD}
-	return quote 
-		cols = rowvals(p.H)
-		vals = nonzeros(p.H)
-		return SVector($((:(@inbounds N/sum(@~ abs.(@view vals[nzrange(p.H, $j+offs)]))) for j in 1:CD)...),)
-	end
-end
-@generated function row_scaling(p::P, 
-	s::ArithMean{T,M,N}, 
-	offs::Int,
-	::Union{SOCone{T, CD}, NSOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CD}
-	return quote 
-		cols = rowvals(p.H)
-		vals = nonzeros(p.H)
-		total = +($((:(@inbounds sum(@~ abs.(@view vals[nzrange(p.H, $j+offs)]))) for j in 1:CD)...),)
-		return SVector($((:(N/total) for j in 1:CD)...), )
-	end
-end
-function col_scaling(p::P, s::GeoMean{T,M,N}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}}
-	if N == 0 || M == 0
-		return ones(SVector{N, T})
-	end
-	s.colmin .= typemax(T)
-	s.colmax .= typemin(T)
-	cols = rowvals(p.H)
-	vals = nonzeros(p.H)
-	for j = 1:M
-		for nz in nzrange(p.H, j) 
-			col = cols[nz]
-			val = vals[nz]
-			@inbounds s.colmin[col] = min(s.colmin[col], abs(val))
-			@inbounds s.colmax[col] = max(s.colmax[col], abs(val))
-		end
-	end
-	for i=1:N 
-		if s.colmin[i] != typemax(T)
-			s.colmin[i] = 1.0/sqrt(s.colmin[i] + s.colmax[i]) 
-		else 
-			s.colmin[i] = one(T)
-		end
-	end
-	return SVector{N}(s.colmin)
-end
-function col_scaling!(output, p::P, s::GeoMean{T,M,N}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}}
-	if N == 0 || M == 0
-		output .= one(T)
-	end
-	output .= typemax(T)
-	s.colmax .= typemin(T)
-	cols = rowvals(p.H)
-	vals = nonzeros(p.H)
-	for j = 1:M
-		for nz in nzrange(p.H, j) 
-			col = cols[nz]
-			val = vals[nz]
-			@inbounds output[col] = min(output[col], abs(val))
-			@inbounds s.colmax[col] = max(s.colmax[col], abs(val))
-		end
-	end
-	for i=1:N 
-		if output[i] != typemax(T)
-			output[i] = 1.0/sqrt(output[i] + s.colmax[i]) 
-		else 
-			output[i] = one(T)
-		end
-	end
-end
-@generated function row_scaling(p::P, 
-	s::GeoMean{T,M,N}, 
-	offs::Int,
-	::Union{Reals{T, CD}, Zeros{T, CD}, POCone{T, CD}, NOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CD}
-	return quote 
-		cols = rowvals(p.H)
-		vals = nonzeros(p.H)
-		return SVector($( (:(begin 
-			minv,maxv = typemax(T), typemin(T)
-			for nz in nzrange(p.H, $j+offs)
-				@inbounds val = abs(vals[nz])
-				minv = min(minv, val)
-				maxv = max(maxv, val)
-			end; 
-			body = minv*maxv;
-			(body > zero(T)) ? 1/sqrt(minv*maxv) : one(T) end) for j in 1:CD)...), )
-	end
-end
-@generated function row_scaling(p::P, 
-	s::GeoMean{T,M,N}, 
-	offs::Int,
-	::Union{SOCone{T, CD}, NSOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},G,CD}
-	return quote 
-		cols = rowvals(p.H)
-		vals = nonzeros(p.H)
-		omin, omax = typemax(T), typemin(T)
-		for j in 1:CD
-			minv,maxv = maxmin_abs(vals[nzrange(p.H, j+offs)])
-			omin,omax = min(omin, minv), max(omax, maxv)
-		end
-		scalar = 1/sqrt(omin*omax)
-		return SVector($((:scalar for j in 1:CD)...), )
-	end
-end
-function row_scaling!(
-	output::Vector{T},
-	p::P, 
-	s::GeoMean{T,M,N}, 
-	offs::Int,
-	::Union{Reals{T, CD}, Zeros{T, CD}, POCone{T, CD}, NOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CD}
-	cols = rowvals(p.H)
-	vals = nonzeros(p.H)
-	minv,maxv = typemax(T), typemin(T)
-	for j in 1:CD
-		for nz in nzrange(p.H, j+offs)
-			@inbounds val = abs(vals[nz])
-			minv = min(minv, val)
-			maxv = max(maxv, val)
-		end
-		body = minv*maxv
-		output[offs + j] = (body > zero(T)) ? 1/sqrt(minv*maxv) : one(T)
-	end
-end
-function row_scaling!(
-	output::Vector{T},
-	p::P, 
-	s::GeoMean{T,M,N}, 
-	offs::Int,
-	::Union{SOCone{T, CD}, NSOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},G,CD}
-	cols = rowvals(p.H)
-	vals = nonzeros(p.H)
-	omin, omax = typemax(T), typemin(T)
-	for j in 1:CD
-		for nz in nzrange(p.H, j+offs)
-			value = abs(@inbounds vals[nz])
-			omin, omax = min(omin, value), max(omax, value)
-		end
-	end
-	scalar = 1/sqrt(omin*omax)
-	for j in 1:CD
-		@inbounds output[offs+j] = scalar
-	end
-	return nothing
-end
-function col_scaling(p::P, s::Equilibration{T,M,N}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}}
-	if N == 0 || M == 0
-		return ones(SVector{N, T})
-	end
-	s.colmax .= typemin(T)
-	cols = rowvals(p.H)
-	vals = nonzeros(p.H)
-	for j = 1:M
-		for nz in nzrange(p.H, j)
-			col = cols[nz]
-			val = vals[nz]
-			@inbounds s.colmax[col] = max(s.colmax[col], abs(val))
-		end
-	end
-	s.colmax .= @~ (1.0 ./ s.colmax)
-	for i in 1:length(s.colmax)
-		@inbounds if s.colmax[i] == zero(T)
-			@inbounds s.colmax[i] = one(T)
-		end
-	end
-	return SVector{N}(s.colmax)
-end
-function col_scaling!(output, p::P, s::Equilibration{T,M,N}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}}
-	if N == 0 || M == 0
-		output .= one(T)
-	end
-	output .= typemin(T)
-	cols = rowvals(p.H)
-	vals = nonzeros(p.H)
-	for j = 1:M
-		for nz in nzrange(p.H, j)
-			col = cols[nz]
-			val = vals[nz]
-			@inbounds s.colmax[col] = max(s.colmax[col], abs(val))
-		end
-	end
-	output .= @~ (1.0 ./ output)
-	for i in 1:length(output)
-		@inbounds if output[i] == zero(T)
-			@inbounds output[i] = one(T)
-		end
-	end
+function apply_scaling!(p::P, s::State{T,N,M,K,D,A,P,G,SC}, rscale, cscale) where {T,N,M,K,D,A, P <: Problem{T,N,M,K,D,A}, G, SC}
+	scale_cone!(p.k, rscale, 0)
+	scale_cone!(p.d, cscale, 0)
+	row_scale(p, s, rscale)
+	col_scale(p, s, cscale)
 end
 
-function max_abs(vect::AbstractArray{T}) where {T}
-	if length(vect) == 0 return one(T) end
-	maxv = typemin(T)
-	for el in vect
-		maxv = max(abs(el), maxv)
+@generated function scale_cone!(c::C, scaling::Vector{T}, offs::Int) where {T, CS, C<:Union{PTSpace{T, CS}, PTCone{T, CS}}}
+	out = :(begin end)
+	current_offs = 0
+	cone_index = 1
+	for cone in CS.parameters
+		push!(out.args, :(scale_cone!(c.cones[$cone_index], scaling, offs+$current_offs)))
+		current_offs += dim(cone)
+		cone_index += 1
 	end
-	return maxv
+	return out
 end
-@generated function row_scaling(p::P, 
-	s::Equilibration{T,M,N}, 
-	offs::Int,
-	::Union{Reals{T, CD}, Zeros{T, CD}, POCone{T, CD}, NOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CD}
-	return quote 
-		cols = rowvals(p.H)
-		vals = nonzeros(p.H)
-		return SVector($((:(@inbounds 1.0 / max_abs(@view vals[nzrange(p.H, $j+offs)])) for j in 1:CD)...),)
-	end
+scale_cone!(::C, scaling::Vector{T}, offs::Int) where {T, D, C <: Union{Reals{T, D}, Zeros{T, D}, SignCone{T, D}}} = nothing
+function scale_cone!(c::HalfspaceCone{T,D}, scaling::Vector{T}, offs::Int) where {T, D}
+	c.d .*= @view scaling[1+offs:offs+D]
+	c.d_norm2 = sum(c.d .^ 2)
 end
-@generated function row_scaling(p::P, 
-	s::Equilibration{T,M,N}, 
-	offs::Int,
-	::Union{SOCone{T, CD}, NSOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CD}
-	return quote 
-		cols = rowvals(p.H)
-		vals = nonzeros(p.H)
-		total = +($((:(@inbounds max_abs(@view vals[nzrange(p.H, $j+offs)])) for j in 1:CD)...),)
-		return SVector($((:(1.0/total) for j in 1:CD)...), )
-	end
-end
-function row_scaling!(
-	output::Vector{T},
-	p::P, 
-	s::Equilibration{T,M,N}, 
-	offs::Int,
-	::Union{Reals{T, CD}, Zeros{T, CD}, POCone{T, CD}, NOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CD}
-	cols = rowvals(p.H)
-	vals = nonzeros(p.H)
-	for j in 1:CD
-		@inbounds output[offs+j] = 1.0/(max_abs(@view vals[nzrange(p.H, j+offs)]))
-	end
-end
-function row_scaling!(
-	output::Vector{T},
-	p::P, 
-	s::Equilibration{T,M,N}, 
-	offs::Int,
-	::Union{SOCone{T, CD}, NSOCone{T, CD}}) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},CD}
-	cols = rowvals(p.H)
-	vals = nonzeros(p.H)
+function scale_cone!(c::SOCone{T,D}, scaling::Vector{T}, offs::Int) where {T, D}
 	total = zero(T)
-	for j in 1:CD
-		total += @inbounds max_abs(@view vals[nzrange(p.H, j+offs)])
+	for i=2+offs:offs+D 
+		total += scaling[i]
 	end
-	for j in 1:CD
-		@inbounds output[offs+j] = 1.0/total
-	end
+	mean = total/(D-1)
+	c.angle *= mean/scaling[1+offs]
 end
+
+scale_cone!(cs::Equality{T, D}, col_scale::Vector{T}, arg_offs::Int) where {T, D} = cs.v ./= col_scale[arg_offs+1:arg_offs + D]
+scale_cone!(i::InfNorm{T, D}, col_scale::Vector{T}, arg_offs::Int) where {T, D} = i.δ ./= col_scale[arg_offs+1:arg_offs + D]
+scale_cone!(::Space{T, D}, col_scale::Vector{T}, arg_offs::Int) where {T, D} = nothing # no-op for the most part
+
 
 function row_scale(p::P, s::State{T,N,M,K,D,A,P,G,S}, row_scaling #=::SVector{M, T}=#) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},G,S}
+	#println("row scaling: $(row_scaling)")
+	#println(p.H)
 	rmul!(p.H, Diagonal(row_scaling))
+	#println(p.g)
 	p.g .*= row_scaling
 	s.row_scale .*= row_scaling
 end
 
 function col_scale(p::P, s::State{T,N,M,K,D,A,P,G,S}, col_scaling #=::SVector{N, T}=#) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},G,S}
+	#println("col scaling: $(col_scaling)")
 	dmat = Diagonal(col_scaling)
 	# rescale H
 	lmul!(dmat, p.H)
@@ -403,21 +136,3 @@ function col_scale(p::P, s::State{T,N,M,K,D,A,P,G,S}, col_scaling #=::SVector{N,
 	p.q .*= col_scaling
 	s.col_scale .*= col_scaling
 end
-@generated function apply_constraint_scaling!(cs::PTSpace{T, CS}, arg_offs::Int, col_scale::Vector{T}) where {T, CS}
-       len = sum(dim.(CS.parameters))
-       if len == 0
-               return
-       end
-       arr = Any[]
-       offs = 0
-       for (i,cone) in enumerate(CS.parameters)
-               push!(arr, :(apply_constraint_scaling!(cs.cones[$i], arg_offs + $offs, col_scale)))
-               offs += dim(cone)
-       end
-       result = :(begin $(arr...) end)
-       return result
-end
-
-apply_constraint_scaling!(cs::Equality{T, D}, arg_offs::Int, col_scale::Vector{T}) where {T, D} = cs.v ./= col_scale[arg_offs:arg_offs + D - 1]
-apply_constraint_scaling!(i::InfNorm{T, D}, arg_offs::Int, col_scale::Vector{T}) where {T, D} = i.δ ./= col_scale[arg_offs:arg_offs + D - 1]
-apply_constraint_scaling!(::Space{T, D}, arg_offs::Int, col_scale::Vector{T}) where {T, D} = nothing # no-op for the most part

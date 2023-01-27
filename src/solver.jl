@@ -26,12 +26,24 @@ end
 abstract type Cone{T, D} <: Space{T, D} end
 dim(::Space{T,D}) where {T,D} = D
 dim(::Type{T}) where {D, Tc, T<:Space{Tc,D}} = D
+struct Polar{T, D, C<:Cone{T, D}} <: Cone{T, D}
+	inner::C 
+end
 struct Reals{T, D} <: Cone{T, D} end # R^D
 struct Zeros{T, D} <: Cone{T, D} end # 0^D
-struct POCone{T, D} <: Cone{T, D} end # { x | forall i, x_i >= 0}
-struct NOCone{T, D} <: Cone{T, D} end # { x | forall i, x_i <= 0}
-struct SOCone{T, D} <: Cone{T, D} end # { [t,x] | |x| <= t }
-struct NSOCone{T, D} <: Cone{T, D} end # { [t,x] | |x| <= -t }
+struct SignCone{T, D} <: Cone{T, D}
+	sign::Bool
+end # { x | forall i, x_i * (-1)^(!sign) >= 0}
+mutable struct HalfspaceCone{T, D} <: Cone{T, D} 
+	d::Vector{T}
+	o::T
+	d_norm2::T
+	HalfspaceCone{T, D}(d::Vector{T}, o::T) where {T, D} = new{T, D}(d, o, sum(d .^ 2))
+end # {x | forall i, <x, d> <= o}
+
+mutable struct SOCone{T, D} <: Cone{T, D}
+	angle::T
+end # { [t,x] | |x| <= angle * t }
 
 struct PTCone{T, Cs<:Tuple{Vararg{C where C<:Cone{T}}}, D} <: Cone{T, D}
 	cones::Cs
@@ -41,128 +53,90 @@ cone_dim(::Cone{T,D}) where {T,D} = D
 cone_dim(::Type{C}) where {T, D, C<:Cone{T,D}} = D
 
 # projections
-project(::Reals{T, D}, x::SVector{D, T}) where {D, T} = x
-project(::Zeros{T, D}, x::SVector{D, T}) where {D, T} = zeros(SVector{D})
-project(i::InfNorm{T, D}, x::SVector{D, T}) where {D, T} = clamp.(x, -i.δ, i.δ)
-project(e::Equality{T, D}, x::SVector{D, T}) where {D, T} = e.v
+project!(t, i, ::Reals{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 @inbounds t[j] = x[j] end)
+project!(t, i, ::Zeros{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 @inbounds t[j] = zero(T) end)
+function project!(t, i, n::InfNorm{T, D}, x::AbstractArray{T}) where {D, T}
+	(for j in i:i+D-1 t[j] = clamp(x[j], -n.δ[j-i+1], n.δ[j-i+1]) end)
+end
+project!(t, i, c::SignCone{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds let sgn = c.sign ? one(T) : -one(T); (for j in i:i+D-1 t[j] = max(sgn*x[j], zero(T))*sgn end) end
+project!(t, i, c::Polar{T, D, SignCone{T, D}}, x::AbstractArray{T}) where {D, T} = @inbounds let sgn = c.inner.sign ? -one(T) : one(T); (for j in i:i+D-1 t[j] = max(sgn*x[j], zero(T))*sgn end) end
+project!(t, i, c::HalfspaceCone{T, D}, x::AbstractArray{T}) where {D, T} =
+	let scalar = (dot(c.d, x[i:i+D-1]) - c.o)/c.d_norm2;
+		if scalar <= 0 
+			for j in i:i+D-1 @inbounds t[j] = x[j] end
+		else 
+			for j in i:i+D-1 t[j] = x[j] - scalar * c.d[j-i+1] end 
+		end
+	end
+project!(t, i, c::Polar{T, D, HalfspaceCone{T, D}}, x::AbstractArray{T}) where {D, T} =
+let scalar = (dot(c.inner.d, x[i:i+D-1]) - c.inner.o)/c.inner.d_norm2;
+	if scalar > 0 
+		for j in i:i+D-1 @inbounds t[j] = x[j] end
+	else 
+		for j in i:i+D-1 t[j] = x[j] - scalar * c.inner.d[j-i+1] end 
+	end
+end
 
-project!(t, i, ::Reals{T, D}, x::AbstractArray{T}, s::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 @inbounds t[j] = x[j] end)
-project!(t, i, ::Zeros{T, D}, x::AbstractArray{T}, s::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 @inbounds t[j] = zero(T) end)
-function project!(t, i, n::InfNorm{T, D}, x::AbstractArray{T}, s::AbstractArray{T}) where {D, T}
-	(for j in i:i+D-1 t[j] = clamp(x[j]*s[j-i+1], -n.δ[j-i+1], n.δ[j-i+1])/s[j-i+1] end)
-end
-project!(t, i, c::POCone{T, D}, x::AbstractArray{T}, s::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 t[j] = max(s[j]*x[j], zero(T))/s[j] end)
-function project!(t, i, e::Equality{T, D}, x::AbstractArray{T}, s::AbstractArray{T}) where {D, T} 
-	(for j=i:i+D-1 @inbounds t[j] = e.v[j]/s[j] end)
-end
-function project(c::POCone{T, D}, x::SVector{D, T}) where {D, T}
-	return max.(x, zero(T))
-end
+project!(t, i, e::Equality{T, D}, x::AbstractArray{T}) where {D, T} = (for j=i:i+D-1 @inbounds t[j] = e.v[j] end)
 
-project!(t, i, c::NOCone{T, D}, x::AbstractArray{T}, s::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 t[j] = min(s[j]*x[j], zero(T))/s[j] end)
-function project(c::NOCone{T, D}, x::SVector{D, T}) where {D, T}
-	return min.(x, zero(T))
-end
-@generated function project!(t, i, c::SOCone{T, D}, x::AbstractArray{T}, s::AbstractArray{T}) where {T, D}
+@generated function project!(t, i, c::SOCone{T, D}, x::AbstractArray{T}) where {T, D}
 	onev = one(T)
-	two = 2*onev
-	zv = zeros(SVector{D,T})
 	vect_inds = SVector{D-1}((2:D) .- 1)
 	return quote
+		angle = c.angle
 		xnorm = norm(x[i .+ $vect_inds])
-		r = x[i] * s[i]
-		if xnorm <= r
+		r = x[i]
+		if xnorm <= angle * r
 			@inbounds (t[i:i+$D-1]) .= x[i:i+$D-1]
-		elseif xnorm <= -r
+		elseif xnorm <= -r/angle
 			@inbounds (t[i:i+$D-1]) .= zero(T)
 		else 
-			scalefact = (xnorm + r)/($two)
-			component_factor = (scalefact)/xnorm
+			scalefact = (angle * xnorm + r)/(angle * angle + $onev)
+			component_factor = angle * (scalefact)/xnorm
 			@inbounds t[i] = scalefact
 			@inbounds (t[i+1:i+$D-1] .= component_factor .* x[i .+ $vect_inds])
 		end
 	end
 end
-@generated function project(c::SOCone{T, D}, x::SVector{D, T}) where {T, D}
+@generated function project!(t, i, c::Polar{T, D, SOCone{T, D}}, x::AbstractArray{T}) where {T, D}
 	onev = one(T)
-	two = 2*onev
-	zv = zeros(SVector{D,T})
-	vect_inds = SVector{D-1}(2:D)
-	return quote
-		xnorm = norm(x[$vect_inds])
-		r = x[1]
-		if xnorm <= r
-			return x
-		elseif xnorm <= -r
-			return $zv
-		else 
-			scalefact = (xnorm + r)/($two)
-			component_factor = (scalefact)/xnorm
-			return vcat(SVector(scalefact), component_factor * x[$vect_inds])
-		end
-	end
-end
-
-@generated function project!(t, i, c::NSOCone{T, D}, x::AbstractArray{T}, s::AbstractArray{T}) where {T, D}
-	onev = one(T)
-	two = 2*onev
 	vect_inds = SVector{D-1}((2:D) .- 1)
 	return quote
+		angle = 1/c.inner.angle
 		xnorm = norm(x[i .+ $vect_inds])
-		r = -x[i] * s[i]
-		if xnorm <= r
+		r = -x[i]
+		if xnorm <= angle * r
 			@inbounds (t[i:i+$D-1]) .= x[i:i+$D-1]
-		elseif xnorm <= -r
+		elseif xnorm <= -r/angle
 			@inbounds (t[i:i+$D-1]) .= zero(T)
 		else 
-			scalefact = (xnorm + r)/($two)
-			component_factor = (scalefact)/xnorm
+			scalefact = (angle * xnorm + r)/(angle * angle + $onev)
+			component_factor = angle * (scalefact)/xnorm
 			@inbounds t[i] = -scalefact
 			@inbounds (t[i+1:i+$D-1] .= component_factor .* x[i .+ $vect_inds])
 		end
 	end
 end
-@generated function project(c::NSOCone{T, D}, x::SVector{D, T}) where {T, D}
-	vect_inds = SVector{D-1}(2:D)
-	return quote 
-		po_equiv = project(SOCone{T,D}(), vcat(-x[1], x[$vect_inds]))
-		return vcat(-po_equiv[1], po_equiv[$vect_inds])
-	end
-end
 
-@generated function project!(t, i, c::Union{PTCone{T, Cs, D}, PTSpace{T, Cs, D}},  x::AbstractArray{T}, s::AbstractArray{T}) where {T, Cs, D}
+
+@generated function project!(t, i, c::Union{PTCone{T, Cs, D}, PTSpace{T, Cs, D}},  x::AbstractArray{T}) where {T, Cs, D}
 	if length(Cs.parameters) == 0 || D == 0 return :(return) end
 	idxes = prepend!(accumulate(+, dim.(Cs.parameters); init=1), 1)
 	out = :(begin end)
 	for (ind, offs) in enumerate(idxes[1:end-1])
 		offs -= 1
-		push!(out.args, :(project!(t, i+$offs, c.cones[$ind], x, s)))
+		push!(out.args, :(project!(t, i+$offs, c.cones[$ind], x)))
 	end
 	push!(out.args, :(return))
 	return out
-end
-@generated function project(c::Union{PTCone{T, Cs, D}, PTSpace{T, Cs, D}}, x::SVector{D, T}) where {T, Cs, D}
-	if length(Cs.parameters) == 0 || D == 0 return :(SVector{0,T}()) end
-	idxes = prepend!(accumulate(+, dim.(Cs.parameters); init=1), 1)
-	ranges = map(x->UnitRange(x...), zip(idxes, Iterators.drop(idxes, 1) .- 1))
-	projections = [:(project(c.cones[$i], x[SVector{$(dim(Cs.parameters[i])), Int64}($(ranges[i]))])) for i in 1:length(Cs.parameters)]
-	return :(vcat($(projections...)))
-end
-
-
-@generated function project(c::Product{T, D1, D2, D3, C1, C2}, x::SVector{D3, T}) where {D1, D2, D3, C1, C2, T}
-	r1 = SVector{D1, Int64}(1:D1)
-	r2 = SVector{D2, Int64}(D1+1:D3)
-	return :(vcat(project(c.s1, x[$r1]), project(c.s2, x[$r2])))
 end
 
 # polars
 polar(::Reals{T,D}) where {T,D} = Zeros{T,D}()
 polar(::Zeros{T,D}) where {T,D} = Reals{T,D}()
-polar(::POCone{T,D}) where {T,D} = NOCone{T,D}()
-polar(::NOCone{T,D}) where {T,D} = POCone{T,D}()
-polar(::SOCone{T,D}) where {T,D} = NSOCone{T,D}()
-polar(::NSOCone{T,D}) where {T,D} = SOCone{T,D}()
+polar(s::SignCone{T,D}) where {T,D} = Polar{T, D, SignCone{T,D}}(s)
+polar(h::HalfspaceCone{T,D}) where {T,D} = Polar{T, D, HalfspaceCone{T,D}}(h)
+polar(s::SOCone{T,D}) where {T,D} = Polar{T, D, SOCone{T,D}}(s)
 
 @generated function polar(c::PTCone{T, Cs, D}) where {T, Cs, D} 
 	tup = Expr(:tuple, (:(polar(c.cones[$i])) for i in 1:length(Cs.parameters))...)
@@ -172,21 +146,20 @@ end
 
 # problem
 # minimize 1/2 z^t P z + q^T z 
-# s.t. H z - g ∈ K, diag(S) z ∈ D
+# s.t. H z - g ∈ K, z ∈ D
 
 struct Problem{T,N,M,K<:Cone{T,M},D<:Space{T,N},A<:AbstractArray{T}}
 	k::K
 	d::D
-	H::SparseMatrixCSC{T, Int}
+	H::SparseMatrixCSC{T, Int} # stored as H^T
 	P::SparseMatrixCSC{T, Int}
 	q::A
 	g::A
-	S::A
 	c::T
-	function Problem(k::K, d::D, H::SparseMatrixCSC{T, Int}, P::SparseMatrixCSC{T, Int}, q::A, g::A, c::T, S::A = ones(N)) where {T,N,M,K<:Cone{T,M},D<:Space{T,N},A<:AbstractArray{T}}
+	function Problem(k::K, d::D, H::SparseMatrixCSC{T, Int}, P::SparseMatrixCSC{T, Int}, q::A, g::A, c::T) where {T,N,M,K<:Cone{T,M},D<:Space{T,N},A<:AbstractArray{T}}
 		@assert length(q) == N
 		@assert length(g) == M
-		return new{T,N,M,K,D,A}(k,d,transpose(H),P,q,g,S,c)
+		return new{T,N,M,K,D,A}(k,d,transpose(H),P,q,g,c)
 	end
 end
 
@@ -351,7 +324,6 @@ function pipg(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, (α,β)::Tuple{T,T}, �
 	z_prev_delta = zero(T)
 	β_scale = 1/(β*ρ)
 	α_scale = 1/(α*ρ)
-	s.k_scaling .= 1.0
 	niters = 0
 	for i=1:iters
 		s.z_prev .= s.z_work
@@ -361,7 +333,7 @@ function pipg(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, (α,β)::Tuple{T,T}, �
 		mul!(s.ξ_i1, p.H, s.η_work, -α, -1.0) # ξ_i1 = - α (H^t η + P * ξ + q)
 		z_raw = s.ξ_i1 # z_raw = - α (H^t η + P * ξ + q)
 		z_raw .+= s.ξ_work # z_raw = ξ - α (H^t η + P * ξ + q)
-		project!(s.z_work, 1, p.d, z_raw, p.S)
+		project!(s.z_work, 1, p.d, z_raw)
 		z_delta = norm_err(s.z_work, s.z_prev)
 
 		s.w_prev .= s.w_work
@@ -370,7 +342,7 @@ function pipg(p::P,s::State{T,N,M,K,D,A,P,G}, iters::Int, (α,β)::Tuple{T,T}, �
 		s.ξ_i1 .= @~ 2 .* s.z_work .- s.ξ_work # w_work = 2z - ξ
 		mul!(s.w_i1, transpose(p.H), s.ξ_i1, β, -β) # w_i1 = β(H(2z - ξ) - g)
 		s.w_i1 .+= s.η_work # w_i1 = η + β(H(2z - ξ) - g)
-		project!(s.w_work, 1, polar(p.k), s.w_i1, s.k_scaling)
+		project!(s.w_work, 1, polar(p.k), s.w_i1)
 		# ξ = (1-ρ)ξ + ρ z
 		s.ξ_work .= @~ (1-ρ) .* s.ξ_work .+ ρ .* s.z_work
 		# η = (1-ρ)η + ρ w

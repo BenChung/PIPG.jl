@@ -94,9 +94,9 @@ function MOI.modify(
 end
 
 convert_cone(z::MOI.Zeros) = Zeros{Float64, z.dimension}()
-convert_cone(n::MOI.Nonnegatives) = POCone{Float64, n.dimension}()
-convert_cone(n::MOI.Nonpositives) = NOCone{Float64, n.dimension}()
-convert_cone(s::MOI.SecondOrderCone) = SOCone{Float64, s.dimension}()
+convert_cone(n::MOI.Nonnegatives) = SignCone{Float64, n.dimension}(true)
+convert_cone(n::MOI.Nonpositives) = SignCone{Float64, n.dimension}(false)
+convert_cone(s::MOI.SecondOrderCone) = SOCone{Float64, s.dimension}(1.0)
 
 function build_problem(
     dest::Optimizer,
@@ -193,6 +193,8 @@ function build_problem(
 		offset = 0
 		for (ci, cone) ∈ moved
 			func = MOI.get(Ab, MOI.ConstraintFunction(), ci)
+			cone_scaling = zeros(Float64, dim(cone))
+			cone_constant = func.constants
 			total = 0
 			for term ∈ func.terms # we know that func is a VectorAffineFunction
 				if !isnothing(variable_assignment[term.scalar_term.variable.value])
@@ -201,13 +203,17 @@ function build_problem(
 				if term.output_index + offset ∈ used_dest_rows
 					throw("multiple variables appearing in a single row in D")
 				end
+				#=
 				if any(abs.(func.constants) .>= 1e-8) 
-					throw("constant terms not allowed for D constraints")
+					throw("constant terms not allowed for D constraints $(func.constants)")
 				end
+				=#
 				push!(used_dest_rows, term.output_index + offset)
+				cone_scaling[term.output_index] = term.scalar_term.coefficient
 				variable_assignment[term.scalar_term.variable.value] = (term.output_index + offset) => term.scalar_term.coefficient
 				total += 1
 			end
+			cone = scale_cone(cone, cone_scaling, cone_constant)
 			push!.((used_src_rows, ), MOI.Utilities.rows(Ab, ci))
 			if total != dim(cone)
 				throw("Insufficiently specified constraint lifted into D")
@@ -250,7 +256,7 @@ function build_problem(
 	end
 
 
-    p = Problem(k, d, H, P, q, g, objective_constant, S)
+    p = Problem(k, d, H, P, q, g, objective_constant)
     if dest.scaling != nothing
     	s = State(p; scaling=dest.scaling(p))
 	else
@@ -264,13 +270,35 @@ end
 
 simplify_cones(cones) = foldl(simplify_cone, cones; init=[])
 simplify_cone(acc, a) = if length(acc) > 0 simplify_cone(acc, last(acc), a) else [a] end
-simplify_cone(acc, a::POCone{T, D1}, b::POCone{T, D2}) where {T, D1, D2} = [acc[1:end-1]; POCone{T, D1+D2}()]
-simplify_cone(acc, a::NOCone{T, D1}, b::NOCone{T, D2}) where {T, D1, D2} = [acc[1:end-1]; NOCone{T, D1+D2}()]
-simplify_cone(acc, a::Reals{T, D1}, b::Reals{T, D2}) where {T, D1, D2} = [acc[1:end-1]; Reals{T, D1+D2}()]
-simplify_cone(acc, a::Zeros{T, D1}, b::Zeros{T, D2}) where {T, D1, D2} = [acc[1:end-1]; Zeros{T, D1+D2}()]
+#simplify_cone(acc, a::POCone{T, D1}, b::POCone{T, D2}) where {T, D1, D2} = [acc[1:end-1]; POCone{T, D1+D2}()]
+#simplify_cone(acc, a::NOCone{T, D1}, b::NOCone{T, D2}) where {T, D1, D2} = [acc[1:end-1]; NOCone{T, D1+D2}()]
+#simplify_cone(acc, a::Reals{T, D1}, b::Reals{T, D2}) where {T, D1, D2} = [acc[1:end-1]; Reals{T, D1+D2}()]
+#simplify_cone(acc, a::Zeros{T, D1}, b::Zeros{T, D2}) where {T, D1, D2} = [acc[1:end-1]; Zeros{T, D1+D2}()]
 simplify_cone(acc, a, b) = [acc; b]
 
-
+scale_cone(cone::Reals{T, D}, scale, constant) where {T, D} = cone
+scale_cone(cone::Zeros{T, D}, scale, constant) where {T, D} = if all(constant .≈ zero(T)) cone else Equality{T, D}(constant) end
+scale_cone(cone::SignCone{T, D}, scale, constant) where {T, D} = 
+	if all(scale .≈ -1.0) SignCone{T, D}(!cone.sign) 
+	elseif all(scale .≈ 1.0) cone
+	else let original_sign = (cone.sign ? one(T) : -one(T))
+			HalfspaceCone{T, D}(original_sign * scale, original_sign * dot(scale, constant))
+		end
+	end
+scale_cone(cone::HalfspaceCone{T, D}, scale, constant) where {T, D} =
+	let new_scale = cone.d .* scale
+		if cone.o .≈ zero(T) && constant .≈ zero(T)
+			if all(new_scale .≈ one(T)) SignCone{T, D}(true)
+			elseif all(new_scale .≈ -one(T)) SignCone{T, D}(false)
+			end
+		end
+		HalfspaceCone{T, D}(new_scale, dot(new_scale, cone.d .* cone.o + constant))
+	end
+scale_cone(cone::SOCone{T, D}, scale, constant) where {T, D} = 
+	if any((!≈).(constant, zero(T))) error("Constant terms not allowed in a lifted second order cone!")
+	elseif length(scale) > 0 && any((!≈).(scale[1], scale)) error("All scalar coefficients in a second order cone must be (up to epsilon) the same!")
+		SOCone{T, D}(cone.angle/scale[1])
+	end
 
 # modification routines
 check_constructed(d::Optimizer) = if isnothing(d.problem) || isnothing(d.state) error("Must optimize before modification!") end
@@ -304,7 +332,8 @@ function MOI.optimize!(
 
 	n = length(dest.problem.q)
 	m = length(dest.problem.g)
-	PIPG.scale(dest.problem, dest.state)
+	#PIPG.scale(dest.problem, dest.state)
+	PIPG.scale!(dest.problem, dest.state)
 	α = compute_α(dest.problem, dest.γ)
     res = @timed pipg(dest.problem, dest.state, dest.niters, α, dest.ϵ, zeros(n), zeros(m))
     println("niters=$(res[1])")
@@ -317,7 +346,8 @@ function MOI.optimize!(dest::Optimizer)
 
 	n = length(dest.problem.q)
 	m = length(dest.problem.g)
-	PIPG.scale(dest.problem, dest.state) # TODO: repeated scaling doesn't work for some reason
+	#PIPG.scale(dest.problem, dest.state) # TODO: repeated scaling doesn't work for some reason
+	PIPG.scale!(dest.problem, dest.state)
 	α = compute_α(dest.problem, dest.γ)
     res = @timed pipg(dest.problem, dest.state, dest.niters, α, dest.ϵ, zeros(n), zeros(m))
     println("niters=$(res[1])")
