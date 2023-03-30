@@ -5,7 +5,7 @@ See page 1057 to get a rough idea for how SCS does it (for conic problems): http
 
 I’ll share the manuscript with new preconditioner (that worked better than OSQP’s in my experiments) as soon as we’ve finished writing it (in the next week or so) (edited) 
 =#
-function scale!(p::P, s::State{T,N,M,K,D,A,P,G,SC}) where {T,N,M,K,D,A, P <: Problem{T,N,M,K,D,A}, G, SC}
+function scale!(p::P, s::State{T,N,M,K,D,A,P,G}) where {T,N,M,K,D,A, P <: Problem{T,N,M,K,D,A}, G}
 	Ds = ones(N)
 	Ps = ones(M) # P is analogous to E in the OSQP paper 
 	δD = ones(N)
@@ -77,7 +77,7 @@ function constrain!(::Type{SOCone{T, D}}, v::Vector{T}, offs) where {T, D}
  	end
 end
 
-function apply_scaling!(p::P, s::State{T,N,M,K,D,A,P,G,SC}, rscale, cscale) where {T,N,M,K,D,A, P <: Problem{T,N,M,K,D,A}, G, SC}
+function apply_scaling!(p::P, s::State{T,N,M,K,D,A,P,G}, rscale, cscale) where {T,N,M,K,D,A, P <: Problem{T,N,M,K,D,A}, G}
 	scale_cone!(p.k, rscale, 0)
 	scale_cone!(p.d, cscale, 0)
 	row_scale(p, s, rscale)
@@ -114,7 +114,7 @@ scale_cone!(i::InfNorm{T, D}, col_scale::Vector{T}, arg_offs::Int) where {T, D} 
 scale_cone!(::Space{T, D}, col_scale::Vector{T}, arg_offs::Int) where {T, D} = nothing # no-op for the most part
 
 
-function row_scale(p::P, s::State{T,N,M,K,D,A,P,G,S}, row_scaling #=::SVector{M, T}=#) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},G,S}
+function row_scale(p::P, s::State{T,N,M,K,D,A,P,G}, row_scaling #=::SVector{M, T}=#) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},G}
 	#println("row scaling: $(row_scaling)")
 	#println(p.H)
 	rmul!(p.H, Diagonal(row_scaling))
@@ -123,7 +123,7 @@ function row_scale(p::P, s::State{T,N,M,K,D,A,P,G,S}, row_scaling #=::SVector{M,
 	s.row_scale .*= row_scaling
 end
 
-function col_scale(p::P, s::State{T,N,M,K,D,A,P,G,S}, col_scaling #=::SVector{N, T}=#) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},G,S}
+function col_scale(p::P, s::State{T,N,M,K,D,A,P,G}, col_scaling #=::SVector{N, T}=#) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A},G}
 	#println("col scaling: $(col_scaling)")
 	dmat = Diagonal(col_scaling)
 	# rescale H

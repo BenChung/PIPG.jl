@@ -1,168 +1,3 @@
-abstract type Space{T, D} end	
-struct InfNorm{T, D} <: Space{T, D}
-    δ::Vector{T}
-    InfNorm{T,D}(x) where {T,D} = begin 
-    	@assert length(x) == D
-    	return new{T,D}(x)
-    end
-end
-struct Equality{T, D} <: Space{T, D}
-	v::Vector{T}
-    Equality{T,D}(x) where {T,D} = begin 
-    	@assert length(x) == D
-    	return new{T,D}(x)
-    end
-end
-struct PTSpace{T, Cs<:Tuple{Vararg{C where C<:Space{T}}}, D} <: Space{T, D}
-	cones::Cs
-	@generated PTSpace{T}(cs::Cs) where {T, Cs <: Tuple{Vararg{C where C<:Space{T}}}} = Expr(:new, PTSpace{T, Cs, sum(dim.(Cs.parameters); init=0)}, :(cs))
-end
-
-struct Product{T, D1, D2, D3, S1 <: Space{T, D1}, S2 <: Space{T, D2}} <: Space{T, D3}
-	s1::S1
-	s2::S2
-	Product(s1::S1, s2::S2) where {T, D1, D2, S1 <: Space{T, D1}, S2 <: Space{T, D2}} = new{T, D1, D2, D1+D2, S1, S2}(s1, s2)
-end
-abstract type Cone{T, D} <: Space{T, D} end
-dim(::Space{T,D}) where {T,D} = D
-dim(::Type{T}) where {D, Tc, T<:Space{Tc,D}} = D
-struct Polar{T, D, C<:Cone{T, D}} <: Cone{T, D}
-	inner::C 
-end
-struct Reals{T, D} <: Cone{T, D} end # R^D
-struct Zeros{T, D} <: Cone{T, D} end # 0^D
-struct SignCone{T, D} <: Cone{T, D}
-	sign::Bool
-end # { x | forall i, x_i * (-1)^(!sign) >= 0}
-mutable struct HalfspaceCone{T, D} <: Cone{T, D} 
-	d::Vector{T}
-	o::T
-	d_norm2::T
-	HalfspaceCone{T, D}(d::Vector{T}, o::T) where {T, D} = new{T, D}(d, o, sum(d .^ 2))
-end # {x | forall i, <x, d> <= o}
-
-mutable struct SOCone{T, D} <: Cone{T, D}
-	angle::T
-end # { [t,x] | |x| <= angle * t }
-
-struct PTCone{T, Cs<:Tuple{Vararg{C where C<:Cone{T}}}, D} <: Cone{T, D}
-	cones::Cs
-	@generated PTCone{T}(cs::Cs) where {T, Cs <: Tuple{Vararg{C where C<:Cone{T}}}} = Expr(:new, PTCone{T, Cs, sum(dim.(Cs.parameters); init=0)}, :(cs))
-end
-cone_dim(::Cone{T,D}) where {T,D} = D
-cone_dim(::Type{C}) where {T, D, C<:Cone{T,D}} = D
-
-# projections
-project!(t, i, ::Reals{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 @inbounds t[j] = x[j] end)
-project!(t, i, ::Zeros{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 @inbounds t[j] = zero(T) end)
-function project!(t, i, n::InfNorm{T, D}, x::AbstractArray{T}) where {D, T}
-	(for j in i:i+D-1 t[j] = clamp(x[j], -n.δ[j-i+1], n.δ[j-i+1]) end)
-end
-project!(t, i, c::SignCone{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds let sgn = c.sign ? one(T) : -one(T); (for j in i:i+D-1 t[j] = max(sgn*x[j], zero(T))*sgn end) end
-project!(t, i, c::Polar{T, D, SignCone{T, D}}, x::AbstractArray{T}) where {D, T} = @inbounds let sgn = c.inner.sign ? -one(T) : one(T); (for j in i:i+D-1 t[j] = max(sgn*x[j], zero(T))*sgn end) end
-project!(t, i, c::HalfspaceCone{T, D}, x::AbstractArray{T}) where {D, T} =
-	let scalar = (dot(c.d, x[i:i+D-1]) - c.o)/c.d_norm2;
-		if scalar <= 0 
-			for j in i:i+D-1 @inbounds t[j] = x[j] end
-		else 
-			for j in i:i+D-1 t[j] = x[j] - scalar * c.d[j-i+1] end 
-		end
-	end
-project!(t, i, c::Polar{T, D, HalfspaceCone{T, D}}, x::AbstractArray{T}) where {D, T} =
-let scalar = (dot(c.inner.d, x[i:i+D-1]) - c.inner.o)/c.inner.d_norm2;
-	if scalar > 0 
-		for j in i:i+D-1 @inbounds t[j] = x[j] end
-	else 
-		for j in i:i+D-1 t[j] = x[j] - scalar * c.inner.d[j-i+1] end 
-	end
-end
-
-project!(t, i, e::Equality{T, D}, x::AbstractArray{T}) where {D, T} = (for j=i:i+D-1 @inbounds t[j] = e.v[j] end)
-
-@generated function project!(t, i, c::SOCone{T, D}, x::AbstractArray{T}) where {T, D}
-	onev = one(T)
-	vect_inds = SVector{D-1}((2:D) .- 1)
-	return quote
-		angle = c.angle
-		xnorm = norm(x[i .+ $vect_inds])
-		r = x[i]
-		if xnorm <= angle * r
-			@inbounds (t[i:i+$D-1]) .= x[i:i+$D-1]
-		elseif xnorm <= -r/angle
-			@inbounds (t[i:i+$D-1]) .= zero(T)
-		else 
-			scalefact = (angle * xnorm + r)/(angle * angle + $onev)
-			component_factor = angle * (scalefact)/xnorm
-			@inbounds t[i] = scalefact
-			@inbounds (t[i+1:i+$D-1] .= component_factor .* x[i .+ $vect_inds])
-		end
-	end
-end
-@generated function project!(t, i, c::Polar{T, D, SOCone{T, D}}, x::AbstractArray{T}) where {T, D}
-	onev = one(T)
-	vect_inds = SVector{D-1}((2:D) .- 1)
-	return quote
-		angle = 1/c.inner.angle
-		xnorm = norm(x[i .+ $vect_inds])
-		r = -x[i]
-		if xnorm <= angle * r
-			@inbounds (t[i:i+$D-1]) .= x[i:i+$D-1]
-		elseif xnorm <= -r/angle
-			@inbounds (t[i:i+$D-1]) .= zero(T)
-		else 
-			scalefact = (angle * xnorm + r)/(angle * angle + $onev)
-			component_factor = angle * (scalefact)/xnorm
-			@inbounds t[i] = -scalefact
-			@inbounds (t[i+1:i+$D-1] .= component_factor .* x[i .+ $vect_inds])
-		end
-	end
-end
-
-
-@generated function project!(t, i, c::Union{PTCone{T, Cs, D}, PTSpace{T, Cs, D}},  x::AbstractArray{T}) where {T, Cs, D}
-	if length(Cs.parameters) == 0 || D == 0 return :(return) end
-	idxes = prepend!(accumulate(+, dim.(Cs.parameters); init=1), 1)
-	out = :(begin end)
-	for (ind, offs) in enumerate(idxes[1:end-1])
-		offs -= 1
-		push!(out.args, :(project!(t, i+$offs, c.cones[$ind], x)))
-	end
-	push!(out.args, :(return))
-	return out
-end
-
-# polars
-polar(::Reals{T,D}) where {T,D} = Zeros{T,D}()
-polar(::Zeros{T,D}) where {T,D} = Reals{T,D}()
-polar(s::SignCone{T,D}) where {T,D} = Polar{T, D, SignCone{T,D}}(s)
-polar(h::HalfspaceCone{T,D}) where {T,D} = Polar{T, D, HalfspaceCone{T,D}}(h)
-polar(s::SOCone{T,D}) where {T,D} = Polar{T, D, SOCone{T,D}}(s)
-
-@generated function polar(c::PTCone{T, Cs, D}) where {T, Cs, D} 
-	tup = Expr(:tuple, (:(polar(c.cones[$i])) for i in 1:length(Cs.parameters))...)
-	return :(PTCone{T}($tup))
-end
-
-
-# problem
-# minimize 1/2 z^t P z + q^T z 
-# s.t. H z - g ∈ K, z ∈ D
-
-struct Problem{T,N,M,K<:Cone{T,M},D<:Space{T,N},A<:AbstractArray{T}}
-	k::K
-	d::D
-	H::SparseMatrixCSC{T, Int} # stored as H^T
-	P::SparseMatrixCSC{T, Int}
-	q::A
-	g::A
-	c::T
-	function Problem(k::K, d::D, H::SparseMatrixCSC{T, Int}, P::SparseMatrixCSC{T, Int}, q::A, g::A, c::T) where {T,N,M,K<:Cone{T,M},D<:Space{T,N},A<:AbstractArray{T}}
-		@assert length(q) == N
-		@assert length(g) == M
-		return new{T,N,M,K,D,A}(k,d,transpose(H),P,q,g,c)
-	end
-end
-
 abstract type Diagnostics{T} end
 struct NoDiagnostics{T} <: Diagnostics{T} end
 struct LogDiagnostics{T} <: Diagnostics{T} end
@@ -199,7 +34,7 @@ end
 
 
 @enum SolverState INDEFINITE OPTIMAL PRIMAL_INFEASIBLE DUAL_INFEASIBLE TIMEOUT
-mutable struct State{T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}, G <: Diagnostics{T}, SCs <: Tuple{Vararg{<:Scaling{T, M, N}}}}
+mutable struct State{T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}, G <: Diagnostics{T}, PE <: AbstractArray{Int}}
 	w_i1::A # M
 	ξ_i1::A # N
 	z_i2::A # N
@@ -217,6 +52,9 @@ mutable struct State{T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}, G <: Diagnostics{T},
 	
 	col_scale::A # N
 	row_scale::A # M
+
+	col_perm::PE # N
+	row_perm::PE # M
 	
 	solver_state::SolverState
 	primal::A # N
@@ -224,11 +62,9 @@ mutable struct State{T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}, G <: Diagnostics{T},
 	history::Vector{A}
 
 	diagnostics::G
-	scaling::SCs
-	function State(p::P; diag::G = NoDiagnostics{T}(), scaling::SCs = (GeoMean(p), Equilibration(p))) where {T,N,M,K,D,A,
+	function State(p::P; col_perm::PE = 1:N, row_perm::PE = 1:M, diag::G = NoDiagnostics{T}()) where {T,N,M,K,D,A,
 			P<:Problem{T,N,M,K,D,A}, 
-			G<:Diagnostics{T},
-			SCs<:Tuple{Vararg{Scaling{T, M, N}}}}
+			G<:Diagnostics{T}, PE<:AbstractArray{Int}}
 	col_scale = similar(p.q)
 	col_scale .= one(T)
 	row_scale = similar(p.g)
@@ -246,14 +82,14 @@ mutable struct State{T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}, G <: Diagnostics{T},
 	primal = initialize_like(p.q)
 	dual = initialize_like(p.g)
 	k_scaling = initialize_like(p.g)
-	return new{T,N,M,K,D,A,P,G,SCs}(
+	return new{T,N,M,K,D,A,P,G,PE}(
 		w_i1, ξ_i1, z_i2, v_i1, 
 		w_prev, z_prev, 
 		w_work, z_work, 
 		η_work, ξ_work,
 		k_scaling,
-		col_scale, row_scale,
-		INDEFINITE, primal, dual, [], diag, scaling)
+		col_scale, row_scale, col_perm, row_perm,
+		INDEFINITE, primal, dual, [], diag)
 	end
 end
 
