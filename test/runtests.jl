@@ -75,21 +75,6 @@ using Test
 end
 
 
-@testset "Linear algebra routines" begin 
-    for i=1:100
-        res = MVector{10,Float64}(zeros(10))
-        mat = sprand(10,10,0.5)
-        inp = SVector{10, Float64}(rand(10))
-        PIPG.spmul!(res, mat, inp, 1.0, 0.0)
-        @test all(abs.(res .- mat*inp) .< 1e-10)
-        PIPG.spmul!(res, mat, inp, 1.0, -1.0)
-        @test all(abs.(res) .< 1e-10)
-        PIPG.spmul!(res, mat, inp, -1.0, 0.0)
-        @test all(abs.(res .+ mat*inp) .< 1e-10)
-    end
-end
-
-
 @testset "Ruiz Equilibration" begin 
     make_prob() = PIPG.Problem(PIPG.PTCone{Float64}((PIPG.SignCone{Float64, 1}(true), PIPG.SignCone{Float64, 1}(true), PIPG.SignCone{Float64, 1}(true), 
         PIPG.SignCone{Float64, 2}(true))), PIPG.Reals{Float64, 2}(), 
@@ -98,12 +83,11 @@ end
         -1 .* [50.0, 120.0], 
         [-10000.0, -1200.0, -110, -0.0, -0.0], 0.0)
 	prob = make_prob()
-	state = PIPG.State(prob)
-    PIPG.scale!(prob, state)
-	γ = 0.9
-	niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0])
+
+	state = PIPG.State(prob, PIPG.xPIPG(0.0001, 0.9))
+	result, niters = PIPG.solve(prob, state)
     println(niters)
-	@test norm(state.col_scale .* state.primal .- [60, 20]) < 0.01
+	@test norm(PIPG.primal(state) .- [60, 20]) < 0.01
 
     make_prob_plane() = PIPG.Problem(PIPG.PTCone{Float64}(( 
         PIPG.SignCone{Float64, 1}(true), 
@@ -114,10 +98,9 @@ end
         -1 .* [50.0, 120.0], 
         [ -1200.0, -110, -0.0, -0.0], 0.0)
     prob = make_prob_plane()
-    state = PIPG.State(prob)
-    PIPG.scale!(prob, state)
-	niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0, 0.0, 0.0, 0.0])
-	@test norm(state.col_scale .* state.primal .- [60, 20]) < 0.01
+	state = PIPG.State(prob, PIPG.xPIPG(0.0001, 0.9))
+	result, niters = PIPG.solve(prob, state)
+	@test norm(PIPG.primal(state) .- [60, 20]) < 0.01
     println(niters)
 end
 
@@ -128,11 +111,10 @@ end
         -1 .* [0.0, 1.0], 
         [0.0, 0.0], 0.0)
     prob = make_prob()
-    state = PIPG.State(prob)
-    PIPG.scale!(prob, state)
     γ = 0.9
-    niters = PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0, 0.0])
-    @test norm(state.col_scale .* state.primal .- [1.0, 0.5]) < 0.01
+	state = PIPG.State(prob, PIPG.xPIPG(0.0001, γ))
+	result, niters = PIPG.solve(prob, state)
+    @test norm(PIPG.primal(state) .- [1.0, 0.5]) < 0.01
     
 	γ = 0.9
 	# QP example
@@ -146,10 +128,9 @@ end
 	
     # no scaling
     prob = make_qp()
-    state = PIPG.State(prob)
-    PIPG.scale!(prob, state)
-	PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [1.0, 1.0], [0.0])
-    result = state.col_scale .* state.primal
+	state = PIPG.State(prob, PIPG.xPIPG(0.0001, γ))
+	_, niters = PIPG.solve(prob, state)
+    result = PIPG.primal(state)
 	@test norm(result .- [0.689, -0.689]) < 0.001
 
     
@@ -163,28 +144,11 @@ end
 	
     # no scaling
     prob = make_basic_qp()
-    state = PIPG.State(prob)
-    PIPG.scale!(prob, state)
-	PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [1.0, 1.0, 1.0], Float64[])
-    result = state.col_scale .* state.primal
+	state = PIPG.State(prob, PIPG.xPIPG(0.0001, γ))
+	_, niters = PIPG.solve(prob, state)
+    result = PIPG.primal(state)
 	@test norm(result .- [3, 5, 7]) < 0.001
 end
-
-@testset "Linear algebra routines" begin 
-    for i=1:100
-        res = MVector{10,Float64}(zeros(10))
-        mat = sprand(10,10,0.5)
-        inp = SVector{10, Float64}(rand(10))
-        PIPG.spmul!(res, mat, inp, 1.0, 0.0)
-        @test all(abs.(res .- mat*inp) .< 1e-10)
-        PIPG.spmul!(res, mat, inp, 1.0, -1.0)
-        @test all(abs.(res) .< 1e-10)
-        PIPG.spmul!(res, mat, inp, -1.0, 0.0)
-        @test all(abs.(res .+ mat*inp) .< 1e-10)
-    end
-end
-
-
 @testset "Moving from K to D" begin 
 	γ = 0.9
     prob = PIPG.Problem(PIPG.SignCone{Float64, 3}(false), PIPG.SignCone{Float64, 2}(true), 
@@ -192,11 +156,9 @@ end
         spzeros(2,2), 
         [-50.0, -120.0], 
         [100.0, 120.0, 110.0], 0.0)
-	state = PIPG.State(prob)
-	PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0, 0.0, 0.0])
-    println(state.primal)
-	@test norm(state.primal .- [60, 20]) < 0.01
-
+    state = PIPG.State(prob, PIPG.xPIPG(0.0001, γ; iters = 2000000))
+    _, niters = PIPG.solve(prob, state)
+	@test norm(PIPG.primal(state) .- [60, 20]) < 0.01
 
     opt = PIPG.Optimizer(ϵ=1e-7)
     model = MOI.Bridges.full_bridge_optimizer(
@@ -253,15 +215,8 @@ end
     Us = [PIPG.InfNorm{Float64, l}([ρu for i=1:l]) for j=1:t]
     D = PIPG.PTSpace{Float64}((PIPG.Equality{Float64, 2*l}(x0), Xes..., PIPG.Zeros{Float64, 2*l}(), Us...))
     prob = PIPG.Problem(K, D, sparse(H), sparse(P), q, g, 0.0)
-    state = PIPG.State(prob)
-    PIPG.scale!(prob, state)
-    #PIPG.apply_constraint_scaling!(prob.d, 1, state.col_scale)
-    α, β = PIPG.compute_α(prob, 0.95, 195.0)
-    a = zeros(3*t*l + 2*l)
-    b = zeros(2*l*t)
-    a .= 0.0
-    b .= 0.0
-    niters = PIPG.pipg(prob, state, 10000, (α, β), 1e-7, a, b, ρ=1.55)
+	state = PIPG.State(prob, PIPG.xPIPG(1e-7, 0.95; ρ=1.55, ω=195.0))
+	_, niters = PIPG.solve(prob, state)
     println(niters)
 end
 
@@ -279,10 +234,9 @@ end
 	
     # no scaling
     prob = make_qp()
-    state = PIPG.State(prob)
-	PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [1.0, 1.0], [0.0])
-    result = state.primal
-	@test norm(result .- [0.689, -0.689]) < 0.001
+    state = PIPG.State(prob, PIPG.xPIPG(0.0001, γ; iters = 2000000))
+    _, niters = PIPG.solve(prob, state)
+	@test norm(PIPG.primal(state) .- [0.689, -0.689]) < 0.001
 
 	# LP example
     make_prob() = PIPG.Problem(PIPG.PTCone{Float64}((PIPG.SignCone{Float64, 1}(true), PIPG.SignCone{Float64, 1}(true), PIPG.SignCone{Float64, 1}(true), 
@@ -292,9 +246,9 @@ end
         -1 .* [50.0, 120.0], 
         [-10000.0, -1200.0, -110, -0.0, -0.0], 0.0)
 	prob = make_prob()
-	state = PIPG.State(prob)
-	PIPG.pipg(prob, state, 2000000, PIPG.compute_α(prob, γ), 0.0001, [0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0])
-	@test norm(state.primal .- [60, 20]) < 0.01
+    state = PIPG.State(prob, PIPG.xPIPG(0.0001, γ; iters = 2000000))
+    _, niters = PIPG.solve(prob, state)
+	@test norm(PIPG.primal(state) .- [60, 20]) < 0.01
 
     #=
     # geometric scaling

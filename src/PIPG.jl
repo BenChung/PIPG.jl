@@ -4,9 +4,9 @@ using SparseArrays
 using LinearAlgebra
 using LazyArrays
 using KaHyPar
-using SparseArrays
-using DataStructures
-using LoopVectorization
+import Base: copy
+import MathOptInterface
+const MOI = MathOptInterface
 
 include("definitions/sets.jl")
 include("definitions/problem.jl")
@@ -14,8 +14,12 @@ include("definitions/projections.jl")
 
 include("problem_parsing/coloring.jl")
 include("problem_parsing/partitioning.jl")
-include("solver.jl")
-include("preconditioning.jl")
+include("preconditioning/preconditioning.jl")
+include("preconditioning/chained.jl")
+include("preconditioning/ruiz.jl")
+include("diagnostics.jl")
+include("solvers/solver.jl")
+include("solvers/xpipg.jl")
 include("MOI_wrapper/MOI_wrapper.jl")
 
 end

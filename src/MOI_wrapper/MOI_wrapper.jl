@@ -1,6 +1,3 @@
-import MathOptInterface
-const MOI = MathOptInterface
-
 @enum Membership K=1 D=2
 MOI.Utilities.@product_of_sets(
 	Cones,
@@ -21,23 +18,17 @@ const OptimizerCache{T} = MOI.Utilities.GenericModel{
 }
 
 
-mutable struct SpecializedOptimizer{T,N,M,R<:Problem{T,N,M}, S<:State{T,N,M}, P<:AbstractArray{Int}} <: MOI.AbstractOptimizer
+mutable struct SpecializedOptimizer{T,N,M,R<:Problem{T,N,M}, S<:State{T,N,M}} <: MOI.AbstractOptimizer
 	name::String
 	
 	problem::R
 	state::S
-
+	solve_result::Union{Nothing, OptimizationResult}
 	
 	sets::PIPG.Cones{T}
 	silent::Bool
 	elapsed_time::Float64
 	max_sense::Bool
-	row_perm::P
-	col_perm::P
-
-	niters::Int
-	ϵ::Float64
-	γ::Float64
 end
 
 mutable struct Optimizer <: MOI.AbstractOptimizer
@@ -284,8 +275,9 @@ function build_problem(
 	end
 
     p = Problem(k, d, H, P, q, g, objective_constant)
-   	s = State(p)
-	dest.specialized = SpecializedOptimizer(dest.name, p, s, Ab.sets, dest.silent, dest.elapsed_time, max_sense, row_perm, col_perm, dest.niters, dest.ϵ, dest.γ)
+	s = PIPG.State(p, PIPG.xPIPG(dest.ϵ, dest.γ; iters=dest.niters))
+
+	dest.specialized = SpecializedOptimizer(dest.name, p, s, nothing, Ab.sets, dest.silent, dest.elapsed_time, max_sense)
 	dest.max_sense = max_sense
 end
 
@@ -320,7 +312,7 @@ scale_cone(cone::SOCone{T, D}, scale, constant) where {T, D} =
 	elseif length(scale) > 0 && any((!≈).(scale[1], scale)) error("All scalar coefficients in a second order cone must be (up to epsilon) the same!")
 		SOCone{T, D}(cone.angle/scale[1])
 	end
-
+	
 # modification routines
 check_constructed(d::Optimizer) = if isnothing(d.specialized) error("Must optimize before modification!") end
 function MOI.modify(
@@ -335,7 +327,7 @@ function MOI.modify(
 	ci::MOI.ConstraintIndex{T} where T<:Union{MOI.ScalarAffineFunction, MOI.VectorAffineFunction},
 	change::Union{MOI.ScalarConstantChange, MOI.VectorConstantChange})
 	rows = MOI.Utilities.rows(d.sets, ci)
-	d.problem.g[rows] .= -1.0 .* view(d.state.row_scale, d.row_perm)[rows] .* change.new_constant
+	d.problem.g[rows] .= -1.0 .* change.new_constant
 end
 
 function MOI.modify(
@@ -344,8 +336,7 @@ function MOI.modify(
 	change::MOI.MultirowChange)
 	new_coeiffs = change.new_coefficients
 	rows = MOI.Utilities.rows(d.sets, ci)[getindex.(new_coeiffs, 1)]
-	scale = view(d.state.row_scale, d.row_perm)[rows] .* view(d.state.col_scale, d.col_perm)[change.variable.value]
-	view(d.problem.H, d.col_perm, d.row_perm)[change.variable.value, rows] .= scale .* getindex.(new_coeiffs, 2)
+	d.problem.H[change.variable.value, rows] .= getindex.(new_coeiffs, 2)
 end
 
 # optimizer
@@ -380,10 +371,10 @@ end
 function MOI.optimize!(dest::SpecializedOptimizer)
 	n = length(dest.problem.q)
 	m = length(dest.problem.g)
-	PIPG.scale!(dest.problem, dest.state)
-	α = compute_α(dest.problem, dest.γ)
-    res = @timed pipg(dest.problem, dest.state, dest.niters, α, dest.ϵ, zeros(n), zeros(m))
-    println("niters=$(res[1])")
+    res = @timed solve(dest.problem, dest.state)
+	result, niters = res[1]
+    println("niters=$niters")
+	dest.solve_result = result
     dest.elapsed_time = res[2]
 end
 const Forwarded = Union{MOI.ResultCount,MOI.ObjectiveValue, MOI.DualObjectiveValue}
@@ -391,7 +382,10 @@ MOI.get(o::Optimizer, s::Forwarded) = MOI.get(o.specialized, s)
 MOI.get(o::Optimizer, s::MOI.TerminationStatus) = isnothing(o.specialized) ? MOI.OPTIMIZE_NOT_CALLED : MOI.get(o.specialized, s)
 MOI.get(o::Optimizer, s::Union{MOI.PrimalStatus, MOI.DualStatus}) = isnothing(o.specialized) ? MOI.NO_SOLUTION : MOI.get(o.specialized, s)
 function MOI.get(o::SpecializedOptimizer, ::MOI.TerminationStatus)
-	s = o.state.solver_state
+	s = o.solve_result
+	if isnothing(s)
+		return MOI.OPTIMIZE_NOT_CALLED
+	end
 	if s == INDEFINITE
 		return MOI.OPTIMIZE_NOT_CALLED
 	elseif s == OPTIMAL
@@ -412,11 +406,16 @@ end
 function MOI.get(o::SpecializedOptimizer, attr::MOI.PrimalStatus)
     if attr.result_index > MOI.get(o, MOI.ResultCount())
         return MOI.NO_SOLUTION
-    elseif !isnothing(o.state) && o.state.solver_state == OPTIMAL
+	end
+	r = o.solve_result
+	if isnothing(r)
+		return MOI.OPTIMIZE_NOT_CALLED
+	end
+    if r == OPTIMAL
         return MOI.FEASIBLE_POINT
-    elseif !isnothing(o.state) && o.state.solver_state == PRIMAL_INFEASIBLE
+    elseif r == PRIMAL_INFEASIBLE
         return MOI.INFEASIBLE_POINT
-    elseif !isnothing(o.state) && o.state.solver_state == DUAL_INFEASIBLE
+    elseif r == DUAL_INFEASIBLE
         return MOI.INFEASIBILITY_CERTIFICATE
     end
     return MOI.NO_SOLUTION
@@ -424,11 +423,16 @@ end
 function MOI.get(o::SpecializedOptimizer, attr::MOI.DualStatus)
     if attr.result_index > MOI.get(o, MOI.ResultCount())
         return MOI.NO_SOLUTION
-    elseif !isnothing(o.state) && o.state.solver_state == OPTIMAL
+	end
+	r = o.solve_result
+	if isnothing(r)
+		return MOI.OPTIMIZE_NOT_CALLED
+	end
+    if r == OPTIMAL
         return MOI.FEASIBLE_POINT
-    elseif !isnothing(o.state) && o.state.solver_state == PRIMAL_INFEASIBLE
+    elseif r == PRIMAL_INFEASIBLE
         return MOI.INFEASIBILITY_CERTIFICATE
-    elseif !isnothing(o.state) && o.state.solver_state == DUAL_INFEASIBLE
+    elseif r == DUAL_INFEASIBLE
         return MOI.INFEASIBLE_POINT
     end
     return MOI.NO_SOLUTION
@@ -456,7 +460,7 @@ function MOI.get(
     attr::MOI.VariablePrimal,
     vi::MOI.VariableIndex)
     MOI.check_result_index_bounds(optimizer, attr)
-    return optimizer.state.primal[vi.value] * optimizer.state.col_scale[vi.value]
+    return primal(optimizer.state)[vi.value]
 end
 
 function MOI.get(
@@ -465,7 +469,7 @@ function MOI.get(
 	ci::MOI.ConstraintIndex)
     MOI.check_result_index_bounds(optimizer, attr)
     rows = MOI.Utilities.rows(optimizer.sets, ci)
-    return .- optimizer.state.dual[rows] .* optimizer.state.row_scale[rows]
+    return .- dual(optimizer.state)[rows]
 end
 
 

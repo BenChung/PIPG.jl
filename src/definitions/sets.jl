@@ -31,6 +31,7 @@ struct Polar{T, D, C<:Cone{T, D}} <: Cone{T, D}
 end
 struct Reals{T, D} <: Cone{T, D} end # R^D
 struct Zeros{T, D} <: Cone{T, D} end # 0^D
+
 struct SignCone{T, D} <: Cone{T, D}
 	sign::Bool
 end # { x | forall i, x_i * (-1)^(!sign) >= 0}
@@ -60,6 +61,15 @@ struct PermutedSpace{T, D, P<:Space{T, D}} <: Space{T, D}
 	permutation::Vector{Int64} # of length D
 end
 
+copy(s::InfNorm{T,D}) where {T,D} = InfNorm{T,D}(copy(s.δ))
+copy(s::Equality{T,D}) where {T,D} = Equality{T,D}(copy(s.v))
+copy(s::PTSpace{T,Cs,D}) where {T,Cs,D} = PTSpace{T}(copy.(s.cones))
+copy(s::PTCone{T,Cs,D}) where {T,Cs,D} = PTCone{T}(copy.(s.cones))
+copy(c::Union{Reals, Zeros, SignCone}) = c
+copy(s::HalfspaceCone{T,D}) where {T,D} = HalfspaceCone{T,D}(s.d, s.o)
+copy(s::SOCone{T,D}) where {T,D} = SOCone{T,D}(s.angle)
+copy(pc::PermutedCone{T, D, P}) where {T, D, P} = PermutedCone{T,D,P}(copy(pc.cone), pc.permutation)
+copy(pc::PermutedSpace{T, D, P}) where {T, D, P} = PermutedSpace{T,D,P}(copy(pc.cone), pc.permutation)
 
 dim(::Space{T,D}) where {T,D} = D
 dim(::Type{T}) where {D, Tc, T<:Space{Tc,D}} = D
