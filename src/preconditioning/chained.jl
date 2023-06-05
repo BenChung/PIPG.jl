@@ -36,9 +36,15 @@ function precondition!(src::Problem, tgt::Problem, pc::ChainedState)
 		current_state = current_target
 	end
 end
-function extract(value::T, pc::ChainedState{T}, p::Union{Primal, Dual}, index) where T
-	for state in pc.states
-		value = extract(value, state, p, index)
+
+function extract(next_pc::Function, pc::ChainedState{T}, p::Union{Primal, Dual}, ind::Int)::T where T 
+	# next_pc :: Func{Int, T}
+	@inline function index_mapping(::Val{IDX}) where IDX
+		if IDX == length(pc.states)
+			return next_pc
+		else
+			return (index) -> extract(index_mapping(Val(pc_index+1)), pc.states[IDX], p, index)
+		end
 	end
-	return value
+	return extract(index_mapping(Val(1)), first(pc.states), p, ind)
 end

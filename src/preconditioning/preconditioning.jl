@@ -8,6 +8,5 @@ Preconditioner protocol:
 precondition(p::Problem{T}, pc::Preconditioner)::Tuple{Problem{T}, PreconditionerState{T}}
 precondition!(src::Problem, tgt::Problem, pc::PreconditionerState{T})
 
-extract(value::T, pc::PreconditionerState{T}, ::Primal, ind)
-extract(value::T, pc::PreconditionerState{T}, ::Dual, ind)
+extract(next_pc::Func{Int, T}, pc::PreconditionerState{T}, ::Union{Primal, Dual}, ind::Int)::T
 =#

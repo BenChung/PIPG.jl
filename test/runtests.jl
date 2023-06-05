@@ -149,6 +149,10 @@ end
     result = PIPG.primal(state)
 	@test norm(result .- [3, 5, 7]) < 0.001
 end
+
+
+
+
 @testset "Moving from K to D" begin 
 	γ = 0.9
     prob = PIPG.Problem(PIPG.SignCone{Float64, 3}(false), PIPG.SignCone{Float64, 2}(true), 

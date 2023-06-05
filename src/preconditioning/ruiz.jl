@@ -63,16 +63,15 @@ function precondition!(src::Problem, tgt::Problem, pc::RuizState{T}) where T
 		pc.row_scale .*= pc.δK
 	end
 
+	# ... compute scalings ...
 	scale_cone!(tgt.k, src.k, pc.row_scale, 0)
 	scale_cone!(tgt.d, src.d, pc.col_scale, 0)
-	#println("tgt H: $(tgt.H)")
 	nonzeros(tgt.H) .= nonzeros(src.H)
 	row_scale(tgt, src, pc.row_scale)
 	col_scale(tgt, src, pc.col_scale)
-	#println("tgt H: $(tgt.H)")
 end
-extract(value::T, pc::RuizState{T}, ::Primal, index) where T = pc.col_scale[index] * value
-extract(value::T, pc::RuizState{T}, ::Dual, index) where T = pc.row_scale[index] * value
+extract(next::Function, pc::RuizState{T}, ::Primal, index::Int) where T = pc.col_scale[index] * next(index)
+extract(next::Function, pc::RuizState{T}, ::Dual, index::Int) where T = pc.row_scale[index] * next(index)
 
 function compute_maxvals(H_colmaxes, H_rowmaxes, mat::SparseMatrixCSC{T, Int}, row_scaling, col_scaling) where T
 	N, M = size(mat)
