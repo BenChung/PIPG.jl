@@ -126,6 +126,19 @@ end
 	result, niters = PIPG.solve(prob, state)
 	@test norm(PIPG.primal(state) .- [60, 20]) < 0.01
 end
+@testset "Hypergraph permutation preconditioning" begin 
+    make_prob() = PIPG.Problem(PIPG.PTCone{Float64}((PIPG.SignCone{Float64, 1}(true), PIPG.SignCone{Float64, 1}(true), PIPG.SignCone{Float64, 1}(true), 
+        PIPG.SignCone{Float64, 2}(true))), PIPG.Reals{Float64, 2}(), 
+        sparse([-100.0 -200.0; -10.0 -30.0; -1.0 -1.0; 1.0 0.0; 0.0 1.0]), 
+        spzeros(2,2), 
+        -1 .* [50.0, 120.0], 
+        [-10000.0, -1200.0, -110, -0.0, -0.0], 0.0)
+	prob = make_prob()
+
+	state = PIPG.State(prob, PIPG.xPIPG(0.0001, 0.9); preconditioner=PIPG.HyperSort(2))
+	result, niters = PIPG.solve(prob, state)
+	@test norm(PIPG.primal(state) .- [60, 20]) < 0.01
+end
 
 @testset "Ruiz Equilibration SOCP" begin 
     make_prob() = PIPG.Problem(PIPG.SOCone{Float64, 2}(1.0), PIPG.PTSpace{Float64}((PIPG.Equality{Float64, 1}([1.0]), PIPG.Reals{Float64, 1}())), 

@@ -4,6 +4,7 @@ using SparseArrays
 using LinearAlgebra
 using LazyArrays
 using KaHyPar
+using DataStructures
 import Base: copy
 import MathOptInterface
 const MOI = MathOptInterface
