@@ -46,7 +46,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
 	niters::Int
 	ϵ::Float64
 	γ::Float64
-	function Optimizer(; niters=1000000, ϵ=1e-9, γ=0.9, preconditioner=Ruiz())
+	function Optimizer(; niters=1000000, ϵ=1e-6, γ=0.9, preconditioner=Ruiz())
 		return new("", nothing, nothing, false, 0.0, false, Dict{MOI.ConstraintIndex, Membership}(), nothing, nothing, preconditioner, niters, ϵ, γ)
 	end
 end
@@ -284,10 +284,11 @@ end
 
 simplify_cones(cones) = foldl(simplify_cone, cones; init=[])
 simplify_cone(acc, a) = if length(acc) > 0 simplify_cone(acc, last(acc), a) else [a] end
+simplify_cone(acc, a::SignCone{T, D1}, b::SignCone{T, D2}) where {T, D1, D2} = [acc[1:end-1]; a.sign == b.sign ? [SignCone{T, D1+D2}(a.sign)] : [a, b]]
 #simplify_cone(acc, a::POCone{T, D1}, b::POCone{T, D2}) where {T, D1, D2} = [acc[1:end-1]; POCone{T, D1+D2}()]
 #simplify_cone(acc, a::NOCone{T, D1}, b::NOCone{T, D2}) where {T, D1, D2} = [acc[1:end-1]; NOCone{T, D1+D2}()]
 #simplify_cone(acc, a::Reals{T, D1}, b::Reals{T, D2}) where {T, D1, D2} = [acc[1:end-1]; Reals{T, D1+D2}()]
-#simplify_cone(acc, a::Zeros{T, D1}, b::Zeros{T, D2}) where {T, D1, D2} = [acc[1:end-1]; Zeros{T, D1+D2}()]
+simplify_cone(acc, a::Zeros{T, D1}, b::Zeros{T, D2}) where {T, D1, D2} = [acc[1:end-1]; Zeros{T, D1+D2}()]
 simplify_cone(acc, a, b) = [acc; b]
 
 scale_cone(cone::Reals{T, D}, scale, constant) where {T, D} = cone
