@@ -6,8 +6,6 @@ using SparseArrays
 using Profile
 const MOI = MathOptInterface
 using Test
-#include("hypergraph_algs.jl")
-
 @testset "Projections" begin
     long_inp = [zeros(6)..., 0, -4.0, 4.0, -10.0]
     res = zeros(4)
@@ -72,8 +70,20 @@ using Test
     result = [-7.744562646538029, -2.696310623822791, 2.696310623822791, -6.740776559556978][perm]
     PIPG.project!(res, 1, cone, arg)
     @test res ≈ result
+
+    cone_inner = PIPG.SOCone{Float64, 4}(-1.0)
+    perm = [2, 4, 1, 3]
+    cone = PIPG.PermutedCone(cone_inner, perm)
+    res = zeros(4)
+    arg = [-4.0, -4.0, 4.0, -10.0][perm]
+    result = [-7.744562646538029, -2.696310623822791, 2.696310623822791, -6.740776559556978][perm]
+    PIPG.project!(res, 1, cone, arg)
+    @test res ≈ result
 end
 
+
+include("hypergraph_algs.jl")
+include("scvx-derived.jl")
 
 @testset "Ruiz Equilibration" begin 
     make_prob() = PIPG.Problem(PIPG.PTCone{Float64}((PIPG.SignCone{Float64, 1}(true), PIPG.SignCone{Float64, 1}(true), PIPG.SignCone{Float64, 1}(true), 

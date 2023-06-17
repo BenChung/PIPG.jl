@@ -51,14 +51,39 @@ struct PTCone{T, Cs<:Tuple{Vararg{C where C<:Cone{T}}}, D} <: Cone{T, D}
 	@generated PTCone{T}(cs::Cs) where {T, Cs <: Tuple{Vararg{C where C<:Cone{T}}}} = Expr(:new, PTCone{T, Cs, sum(dim.(Cs.parameters); init=0)}, :(cs))
 end
 
+function Base.show(io::IO, p::PTCone{T}) where T
+	print(io, "PTCone{$T}((") 
+	for (ind, cone) in enumerate(p.cones)
+		show(io, cone)
+		if ind != length(p.cones)
+			print(io, ", ")
+		end
+	end
+	print(io, "))")
+end
+
 struct PermutedCone{T, D, P<:Cone{T, D}} <: Cone{T, D}
 	cone::P
 	permutation::Vector{Int64} # of length D
+	inverse_permutation::Vector{Int64}
+	function PermutedCone(cone::P, permutation::Vector{Int64}) where {T, D, P<:Cone{T, D}}
+		@assert length(permutation) == D
+		inverse_permutation = collect(1:length(permutation))
+		inverse_permutation[permutation] .= 1:length(permutation)
+		return new{T, D, P}(cone, permutation, inverse_permutation)
+	end
 end
 
 struct PermutedSpace{T, D, P<:Space{T, D}} <: Space{T, D}
 	cone::P
 	permutation::Vector{Int64} # of length D
+	inverse_permutation::Vector{Int64}
+	function PermutedSpace(cone::P, permutation::Vector{Int64}) where {T, D, P<:Space{T, D}}
+		@assert length(permutation) == D
+		inverse_permutation = collect(1:length(permutation))
+		inverse_permutation[permutation] .= 1:length(permutation)
+		return new{T, D, P}(cone, permutation, inverse_permutation)
+	end
 end
 
 copy(s::InfNorm{T,D}) where {T,D} = InfNorm{T,D}(copy(s.δ))

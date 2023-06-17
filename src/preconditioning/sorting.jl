@@ -10,20 +10,20 @@ struct HyperSortState{T} <: PreconditionerState{T}
 end
 
 function precondition(p::Problem{T}, pc::HyperSort)::Tuple{Problem{T}, PreconditionerState{T}} where T
-    row_perm, col_perm = sort_matrix(sparse(transpose(p.H)), pc.nstages) # this is doing way too much copying and it probably makes sense to store H untransposed
+    col_perm, row_perm = sort_matrix(p.H, pc.nstages) # this is doing way too much copying and it probably makes sense to store H untransposed
     @assert dim(p.k) == length(row_perm)
     @assert dim(p.d) == length(col_perm)
-    H = p.H[col_perm, row_perm] # note that H is stored transpoed
+    H = p.H[col_perm, row_perm]
     P = p.P[col_perm, col_perm]
     k = PermutedCone(p.k, row_perm)
     d = PermutedSpace(p.d, col_perm)
     q = p.q[col_perm]
     g = p.g[row_perm]
-    return (Problem(k,d, sparse(transpose(H)), P, q, g, p.c), HyperSortState{T}(row_perm, col_perm))
+    return (Problem(k,d, sparse(transpose(H)), P, q, g, p.c), HyperSortState{T}(col_perm, row_perm))
 end
 function precondition!(src::Problem, tgt::Problem, pc::HyperSortState{T}) where T
-    row_perm = pc.row_perm
     col_perm = pc.col_perm
+    row_perm = pc.row_perm
     tgt.H .= src.H[col_perm, row_perm]
     tgt.P .= src.P[col_perm, col_perm]
     tgt.q .= src.q[col_perm]
@@ -135,7 +135,11 @@ function HP_BDCO(adj, k::Int, p1::Vector{Bool}, p2::Vector{Bool}; inds = nothing
     if inds == nothing
         inds = [i for i=1:length(p1)]
     end
+    if length(p1) == 0 && length(p2) == 0
+        return [], []
+    end
     (verts, edges) = size(adj)
+    println("iteration size: $verts, $edges")
     edge_assignment = zeros(Int, edges)
     k1 = floor(Int, k/2)
     k2 = ceil(Int, k/2)
