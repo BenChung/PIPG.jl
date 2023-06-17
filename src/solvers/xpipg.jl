@@ -75,6 +75,10 @@ function compute_α(p::Problem{T}, γ::T, ω::T=T(2.0)) where {T}
 end
 
 function solve(p::P, solver::xPIPG{T}, solver_state::xPIPGState{T, A}, d::G) where {T,N,M,K,D,A,P<:Problem{T,N,M,K,D,A}, G<:Diagnostics{T}}
+	if (M == 0 && max_singular_value(p.P) < 1e-9) 
+		solver_state.primal .= -p.q
+		return DUAL_INFEASIBLE, 0
+	end
 	iters = solver.iters
 	(α, β) = compute_α(p, solver.γ, solver.ω)
 	ϵ = solver.ϵ
@@ -151,9 +155,12 @@ function solve(p::P, solver::xPIPG{T}, solver_state::xPIPGState{T, A}, d::G) whe
 		dual .= w_work
 		return OPTIMAL, niters
 	elseif β_scale*w_delta > ϵ || isinf(w_delta)
+		println("term case 1")
+		println(p)
 		dual .= w_work ./ norm(w_work)
 		return PRIMAL_INFEASIBLE, niters
 	elseif α_scale*z_delta > ϵ || isinf(z_delta)
+		println("term case 2")
 		primal .= z_work ./ norm(z_work)
 		return DUAL_INFEASIBLE, niters
 	end
