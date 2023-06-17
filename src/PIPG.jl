@@ -5,6 +5,7 @@ using LinearAlgebra
 using LazyArrays
 using KaHyPar
 using DataStructures
+using FastBroadcast
 import Base: copy
 import MathOptInterface
 const MOI = MathOptInterface

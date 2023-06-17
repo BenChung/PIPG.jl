@@ -24,25 +24,19 @@ end
 
 project!(t, i, e::Equality{T, D}, x::AbstractArray{T}) where {D, T} = (for j=i:i+D-1 @inbounds t[j] = e.v[j] end)
 
-@generated function project!(t, i, c::SOCone{T, D}, x::AbstractArray{T}) where {T, D}
-	onev = one(T)
-	vect_inds = SVector{D-1}((2:D) .- 1)
-	return quote
-		angle = c.angle
-		xnorm = norm(x[i .+ $vect_inds])
-		r = x[i]
-		if xnorm <= angle * r
-			@inbounds (t[i:i+$D-1]) .= x[i:i+$D-1]
-		elseif xnorm <= -r/angle
-			@inbounds (t[i:i+$D-1]) .= zero(T)
-		else 
-			scalefact = (angle * xnorm + r)/(angle * angle + $onev)
-			component_factor = angle * (scalefact)/xnorm
-			@inbounds t[i] = scalefact
-			for j = i+1:i+$D-1
-				@inbounds t[j] = component_factor * x[j]
-			end
-		end
+function project!(t, i, c::SOCone{T, D}, x::AbstractArray{T}) where {T, D}
+	angle = c.angle
+	xnorm = norm(@~ x[i .+ (1:(D-1))])
+	r = x[i]
+	if xnorm <= angle * r 
+		@inbounds @.. t[i:i+D-1] .= x[i:i+D-1]
+	elseif xnorm <= -r/angle
+		@inbounds @.. t[i:i+D-1] .= zero(T)
+	else
+		scalefact = (angle * xnorm + r)/(angle * angle + one(T))
+		component_factor = angle * (scalefact)/xnorm
+		@inbounds t[i] = scalefact
+		@inbounds @.. t[i+1:i+D-1] .= component_factor .* x[i+1:i+D-1]
 	end
 end
 
@@ -88,4 +82,4 @@ end
 	return out
 end
 
-project!(t, i, p::Union{PermutedCone{T, D}, PermutedSpace{T, D}}, x::AbstractArray{T}) where {T, D} = project!(view(t, p.permutation), i, p.cone, view(x, p.permutation))
+project!(t, i, p::Union{PermutedCone{T, D}, PermutedSpace{T, D}}, x::AbstractArray{T}) where {T, D} = project!(view(t, p.inverse_permutation), i, p.cone, view(x, p.inverse_permutation))
