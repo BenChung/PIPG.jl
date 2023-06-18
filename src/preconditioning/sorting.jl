@@ -19,7 +19,7 @@ function precondition(p::Problem{T}, pc::HyperSort)::Tuple{Problem{T}, Precondit
     d = PermutedSpace(p.d, col_perm)
     q = p.q[col_perm]
     g = p.g[row_perm]
-    return (Problem(k,d, sparse(transpose(H)), P, q, g, p.c), HyperSortState{T}(col_perm, row_perm))
+    return (Problem(k,d, sparse(transpose(H)), P, q, g, p.c), HyperSortState{T}(row_perm, col_perm))
 end
 function precondition!(src::Problem, tgt::Problem, pc::HyperSortState{T}) where T
     col_perm = pc.col_perm
