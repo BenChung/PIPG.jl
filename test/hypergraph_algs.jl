@@ -70,8 +70,8 @@ end
     K = PIPG.Zeros{Float64, 2*t*l}()
     ρx = 1.0
     ρu = 0.5
-    Xes = [PIPG.InfNorm{Float64, 2*l}([ρx for i=1:2*l]) for j=1:t-1]
-    Us = [PIPG.InfNorm{Float64, l}([ρu for i=1:l]) for j=1:t]
+    Xes = [PIPG.InfBound{Float64, 2*l}([ρx for i=1:2*l]) for j=1:t-1]
+    Us = [PIPG.InfBound{Float64, l}([ρu for i=1:l]) for j=1:t]
     D = PIPG.PTSpace{Float64}((PIPG.Equality{Float64, 2*l}(x0), Xes..., PIPG.Zeros{Float64, 2*l}(), Us...))
     prob = PIPG.Problem(K, D, sparse(H), sparse(P), q, g, 0.0)
 	state = PIPG.State(prob, PIPG.xPIPG(1e-7, 0.95; ρ=1.55, ω=195.0))

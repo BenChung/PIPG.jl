@@ -1,7 +1,7 @@
 abstract type Space{T, D} end	
-struct InfNorm{T, D} <: Space{T, D}
+struct InfBound{T, D} <: Space{T, D}
     δ::Vector{T}
-    InfNorm{T,D}(x) where {T,D} = begin 
+    InfBound{T,D}(x) where {T,D} = begin 
     	@assert length(x) == D
     	return new{T,D}(x)
     end
@@ -26,6 +26,7 @@ end
 abstract type Cone{T, D} <: Space{T, D} end
 
 
+abstract type Cone{T, D} <: Space{T, D} end
 struct Polar{T, D, C<:Cone{T, D}} <: Cone{T, D}
 	inner::C 
 end
@@ -86,7 +87,7 @@ struct PermutedSpace{T, D, P<:Space{T, D}} <: Space{T, D}
 	end
 end
 
-copy(s::InfNorm{T,D}) where {T,D} = InfNorm{T,D}(copy(s.δ))
+copy(s::InfBound{T,D}) where {T,D} = InfBound{T,D}(copy(s.δ))
 copy(s::Equality{T,D}) where {T,D} = Equality{T,D}(copy(s.v))
 copy(s::PTSpace{T,Cs,D}) where {T,Cs,D} = PTSpace{T}(copy.(s.cones))
 copy(s::PTCone{T,Cs,D}) where {T,Cs,D} = PTCone{T}(copy.(s.cones))

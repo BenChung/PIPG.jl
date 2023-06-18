@@ -1,6 +1,6 @@
 project!(t, i, ::Reals{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 @inbounds t[j] = x[j] end)
 project!(t, i, ::Zeros{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 @inbounds t[j] = zero(T) end)
-function project!(t, i, n::InfNorm{T, D}, x::AbstractArray{T}) where {D, T}
+function project!(t, i, n::InfBound{T, D}, x::AbstractArray{T}) where {D, T}
 	(for j in i:i+D-1 t[j] = clamp(x[j], -n.δ[j-i+1], n.δ[j-i+1]) end)
 end
 project!(t, i, c::SignCone{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds let sgn = c.sign ? one(T) : -one(T); (for j in i:i+D-1 t[j] = max(sgn*x[j], zero(T))*sgn end) end

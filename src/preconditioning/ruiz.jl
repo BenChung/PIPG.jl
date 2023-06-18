@@ -134,7 +134,7 @@ function scale_cone!(tgt::SOCone{T, D}, src::SOCone{T,D}, scaling::Vector{T}, of
 end
 
 scale_cone!(tgt::Equality{T, D}, src::Equality{T, D}, col_scale::Vector{T}, arg_offs::Int) where {T, D} = tgt.v .=  src.v ./ col_scale[arg_offs+1:arg_offs + D]
-scale_cone!(tgt::InfNorm{T, D}, src::InfNorm{T, D}, col_scale::Vector{T}, arg_offs::Int) where {T, D} = tgt.δ .= src.δ ./ col_scale[arg_offs+1:arg_offs + D]
+scale_cone!(tgt::InfBound{T, D}, src::InfBound{T, D}, col_scale::Vector{T}, arg_offs::Int) where {T, D} = tgt.δ .= src.δ ./ col_scale[arg_offs+1:arg_offs + D]
 scale_cone!(::Space{T, D}, ::Space{T, D}, col_scale::Vector{T}, arg_offs::Int) where {T, D} = nothing # no-op for the most part
 
 function row_scale(tgt::P, src::P, row_scaling #=::SVector{M, T}=#) where {T,N,M,K,D,A,P <: Problem{T,N,M,K,D,A}}
