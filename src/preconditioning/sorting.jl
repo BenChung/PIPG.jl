@@ -1,5 +1,3 @@
-
-
 struct HyperSort <: Preconditioner
     nstages::Int
 end
@@ -139,7 +137,7 @@ function HP_BDCO(adj, k::Int, p1::Vector{Bool}, p2::Vector{Bool}; inds = nothing
         return [], []
     end
     (verts, edges) = size(adj)
-    println("iteration size: $verts, $edges")
+    #println("iteration size: $verts, $edges")
     edge_assignment = zeros(Int, edges)
     k1 = floor(Int, k/2)
     k2 = ceil(Int, k/2)

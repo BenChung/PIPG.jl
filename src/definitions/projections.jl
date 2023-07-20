@@ -1,7 +1,7 @@
 project!(t, i, ::Reals{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 @inbounds t[j] = x[j] end)
 project!(t, i, ::Zeros{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 @inbounds t[j] = zero(T) end)
 function project!(t, i, n::InfBound{T, D}, x::AbstractArray{T}) where {D, T}
-	(for j in i:i+D-1 t[j] = clamp(x[j], -n.δ[j-i+1], n.δ[j-i+1]) end)
+	(for j in i:i+D-1 t[j] = clamp(x[j], n.c[j-i+1]-n.δ[j-i+1], n.c[j-i+1] + n.δ[j-i+1]) end)
 end
 project!(t, i, c::SignCone{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds let sgn = c.sign ? one(T) : -one(T); (for j in i:i+D-1 t[j] = max(sgn*x[j], zero(T))*sgn end) end
 project!(t, i, c::Polar{T, D, SignCone{T, D}}, x::AbstractArray{T}) where {D, T} = @inbounds let sgn = c.inner.sign ? -one(T) : one(T); (for j in i:i+D-1 t[j] = max(sgn*x[j], zero(T))*sgn end) end
@@ -82,4 +82,32 @@ end
 	return out
 end
 
-project!(t, i, p::Union{PermutedCone{T, D}, PermutedSpace{T, D}}, x::AbstractArray{T}) where {T, D} = project!(view(t, p.inverse_permutation), i, p.cone, view(x, p.inverse_permutation))
+project!(t, i, p::Union{PermutedCone{T, D}, PermutedSpace{T, D}}, x::AbstractArray{T}) where {T, D} = 
+	project!(view(t, p.inverse_permutation), i, p.cone, view(x, p.inverse_permutation))
+
+function project!(t, i, p::MultiHalfspace{T, D}, x::AbstractArray{T}) where {T, D}
+	offs = i
+	int_offs = 1
+	for (n,d) in enumerate(p.dims)
+		let scalar = (dot(p.d[int_offs:int_offs+d-1], x[offs:offs+d-1]) - p.o[n])/p.d_norm2[n];
+			if scalar <= 0 
+				for j in offs:offs+d-1 @inbounds t[j] = x[j] end
+			else 
+				for j in offs:offs+d-1 t[j] = x[j] - scalar * p.d[int_offs + j - offs] end 
+			end
+		end
+		offs += d
+		int_offs += d
+	end
+end
+function project!(t, i, p::MultiPlane{T, D}, x::AbstractArray{T}) where {T, D}
+	offs = i
+	int_offs = 1
+	for (n,d) in enumerate(p.dims)
+		let scalar = (dot(p.d[int_offs:int_offs+d-1], x[offs:offs+d-1]) - p.o[n])/p.d_norm2[n];
+			for j in offs:offs+d-1 t[j] = x[j] - scalar * p.d[int_offs + j - offs] end 
+		end
+		offs += d
+		int_offs += d
+	end
+end

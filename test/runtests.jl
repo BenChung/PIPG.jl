@@ -79,11 +79,57 @@ using Test
     result = [-7.744562646538029, -2.696310623822791, 2.696310623822791, -6.740776559556978][perm]
     PIPG.project!(res, 1, cone, arg)
     @test res ≈ result
+
+
+    a = PIPG.HalfspaceCone{Float64, 2}([1.0, 2.0], 1.0)
+    b = PIPG.HalfspaceCone{Float64, 3}([3.0, 4.0, 5.0], -1.0)
+    combined = PIPG.PTCone{Float64}((a, b))
+    arg = [1.0, 1.0, 1.0, 1.0, 1.0]
+    res = zeros(5)
+    PIPG.project!(res, 1, combined, arg)
+    res2 = zeros(5)
+    equivalent_cone = PIPG.MultiHalfspace{Float64, 5}([1.0, 2.0, 3.0, 4.0, 5.0], [1.0, -1.0], [5.0, 50.0], [2, 3])
+    PIPG.project!(res2, 1, combined, arg)
+    @test res2 ≈ res
+    println(res2)
+
+    arg = [1.0, 1.0, 1.0, 1.0, 1.0]
+    res = zeros(5)
+    cone = PIPG.MultiPlane{Float64, 5}([1.0, 2.0, 3.0, 4.0, 5.0], [1.0, -1.0], [5.0, 50.0], [2, 3])
+    PIPG.project!(res, 1, cone, arg)
+    println(res)
+    @test false
 end
 
-
+include("lifting.jl")
 include("hypergraph_algs.jl")
-include("scvx-derived.jl")
+
+@testset "Intervals" begin 
+    opt = PIPG.Optimizer(ϵ=1e-7)
+    model = MOI.Bridges.full_bridge_optimizer(
+        MOI.Utilities.CachingOptimizer(
+            MOI.Utilities.UniversalFallback(MOI.Utilities.Model{Float64}()),
+            opt,
+        ),
+        Float64,
+    )
+    x = MOI.add_variables(model, 2)
+    MOI.set(model, 
+        MOI.ObjectiveFunction{MOI.ScalarQuadraticFunction{Float64}}(), 
+        MOI.ScalarQuadraticFunction(MOI.ScalarQuadraticTerm{Float64}[], MOI.ScalarAffineTerm.([1, 1.0], x), 0.0))
+    MOI.set(model, MOI.ObjectiveSense(), MOI.MAX_SENSE)
+    MOI.add_constraint(model,
+        MOI.ScalarAffineFunction([MOI.ScalarAffineTerm(1.0, x[1])], 0.0),
+        MOI.Interval(0.0, 1.0))
+        MOI.add_constraint(model,
+            MOI.ScalarAffineFunction([MOI.ScalarAffineTerm(2.0, x[2])], 0.0),
+            MOI.Interval(0.0, 1.0))
+    MOI.optimize!(model)
+    @test MOI.get(model, MOI.PrimalStatus()) == MOI.FEASIBLE_POINT
+    @test MOI.get(model, MOI.DualStatus()) == MOI.FEASIBLE_POINT
+    @test MOI.get(model, MOI.TerminationStatus()) == MOI.OPTIMAL
+    @test norm(MOI.get.(model, MOI.VariablePrimal(), x)  .- [1.0, 0.5]) < 0.01
+end
 
 @testset "Ruiz Equilibration" begin 
     make_prob() = PIPG.Problem(PIPG.PTCone{Float64}((PIPG.SignCone{Float64, 1}(true), PIPG.SignCone{Float64, 1}(true), PIPG.SignCone{Float64, 1}(true), 
@@ -195,10 +241,6 @@ end
     result = PIPG.primal(state)
 	@test norm(result .- [3, 5, 7]) < 0.001
 end
-
-
-
-
 @testset "Moving from K to D" begin 
 	γ = 0.9
     prob = PIPG.Problem(PIPG.SignCone{Float64, 3}(false), PIPG.SignCone{Float64, 2}(true), 
@@ -261,8 +303,8 @@ end
     K = PIPG.Zeros{Float64, 2*t*l}()
     ρx = 1.0
     ρu = 0.5
-    Xes = [PIPG.InfBound{Float64, 2*l}([ρx for i=1:2*l]) for j=1:t-1]
-    Us = [PIPG.InfBound{Float64, l}([ρu for i=1:l]) for j=1:t]
+    Xes = [PIPG.InfBound{Float64, 2*l}([ρx for i=1:2*l], zeros(2*l)) for j=1:t-1]
+    Us = [PIPG.InfBound{Float64, l}([ρu for i=1:l], zeros(l)) for j=1:t]
     D = PIPG.PTSpace{Float64}((PIPG.Equality{Float64, 2*l}(x0), Xes..., PIPG.Zeros{Float64, 2*l}(), Us...))
     prob = PIPG.Problem(K, D, sparse(H), sparse(P), q, g, 0.0)
 	state = PIPG.State(prob, PIPG.xPIPG(1e-7, 0.95; ρ=1.55, ω=195.0))

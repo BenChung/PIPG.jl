@@ -4,7 +4,8 @@ MOI.Utilities.@product_of_sets(
 	MOI.Zeros,
 	MOI.Nonnegatives,
 	MOI.Nonpositives,
-	MOI.SecondOrderCone)
+	MOI.SecondOrderCone,
+	MOI.Interval)
 const OptimizerCache{T} = MOI.Utilities.GenericModel{
 	Float64,
 	MOI.Utilities.ObjectiveContainer{Float64},
@@ -79,7 +80,8 @@ const SupportedSets = Union{
 	MOI.Zeros,
 	MOI.Nonnegatives,
 	MOI.Nonpositives,
-	MOI.SecondOrderCone
+	MOI.SecondOrderCone,
+	MOI.Interval
 }
 MOI.supports(::Union{Optimizer, SpecializedOptimizer}, ::Union{
 		MOI.ObjectiveSense, 
@@ -105,6 +107,10 @@ convert_cone(z::MOI.Zeros) = Zeros{Float64, z.dimension}()
 convert_cone(n::MOI.Nonnegatives) = SignCone{Float64, n.dimension}(true)
 convert_cone(n::MOI.Nonpositives) = SignCone{Float64, n.dimension}(false)
 convert_cone(s::MOI.SecondOrderCone) = SOCone{Float64, s.dimension}(1.0)
+function convert_cone(s::MOI.Interval) 
+	span = s.lower - s.upper 
+	InfBound{Float64,1}([span], [lower + span/2])
+end
 
 function build_problem(
     dest::Optimizer,

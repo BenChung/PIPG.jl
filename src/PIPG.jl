@@ -6,6 +6,7 @@ using LazyArrays
 using KaHyPar
 using DataStructures
 using FastBroadcast
+using Graphs
 import Base: copy
 import MathOptInterface
 const MOI = MathOptInterface
@@ -14,8 +15,8 @@ include("definitions/sets.jl")
 include("definitions/problem.jl")
 include("definitions/projections.jl")
 
-include("problem_parsing/coloring.jl")
 include("preconditioning/preconditioning.jl")
+include("problem_parsing/coloring.jl")
 include("preconditioning/chained.jl")
 include("preconditioning/sorting.jl")
 include("preconditioning/ruiz.jl")
