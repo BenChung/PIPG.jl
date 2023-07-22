@@ -1,14 +1,14 @@
-project!(t, i, ::Reals{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 @inbounds t[j] = x[j] end)
-project!(t, i, ::Zeros{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds (for j in i:i+D-1 @inbounds t[j] = zero(T) end)
+project!(t, i, ::Reals{T, D}, x::AbstractArray{T}) where {D, T} = (for j in i:i+D-1 t[j] = x[j] end)
+project!(t, i, ::Zeros{T, D}, x::AbstractArray{T}) where {D, T} = (for j in i:i+D-1 t[j] = zero(T) end)
 function project!(t, i, n::InfBound{T, D}, x::AbstractArray{T}) where {D, T}
 	(for j in i:i+D-1 t[j] = clamp(x[j], -n.δ[j-i+1], n.δ[j-i+1]) end)
 end
-project!(t, i, c::SignCone{T, D}, x::AbstractArray{T}) where {D, T} = @inbounds let sgn = c.sign ? one(T) : -one(T); (for j in i:i+D-1 t[j] = max(sgn*x[j], zero(T))*sgn end) end
-project!(t, i, c::Polar{T, D, SignCone{T, D}}, x::AbstractArray{T}) where {D, T} = @inbounds let sgn = c.inner.sign ? -one(T) : one(T); (for j in i:i+D-1 t[j] = max(sgn*x[j], zero(T))*sgn end) end
+project!(t, i, c::SignCone{T, D}, x::AbstractArray{T}) where {D, T} = let sgn = c.sign ? one(T) : -one(T); (for j in i:i+D-1 t[j] = max(sgn*x[j], zero(T))*sgn end) end
+project!(t, i, c::Polar{T, D, SignCone{T, D}}, x::AbstractArray{T}) where {D, T} = let sgn = c.inner.sign ? -one(T) : one(T); (for j in i:i+D-1 t[j] = max(sgn*x[j], zero(T))*sgn end) end
 project!(t, i, c::HalfspaceCone{T, D}, x::AbstractArray{T}) where {D, T} =
 	let scalar = (dot(c.d, x[i:i+D-1]) - c.o)/c.d_norm2;
 		if scalar <= 0 
-			for j in i:i+D-1 @inbounds t[j] = x[j] end
+			for j in i:i+D-1 t[j] = x[j] end
 		else 
 			for j in i:i+D-1 t[j] = x[j] - scalar * c.d[j-i+1] end 
 		end
@@ -16,27 +16,32 @@ project!(t, i, c::HalfspaceCone{T, D}, x::AbstractArray{T}) where {D, T} =
 project!(t, i, c::Polar{T, D, HalfspaceCone{T, D}}, x::AbstractArray{T}) where {D, T} =
 let scalar = (dot(c.inner.d, x[i:i+D-1]) - c.inner.o)/c.inner.d_norm2;
 	if scalar > 0 
-		for j in i:i+D-1 @inbounds t[j] = x[j] end
+		for j in i:i+D-1 t[j] = x[j] end
 	else 
 		for j in i:i+D-1 t[j] = x[j] - scalar * c.inner.d[j-i+1] end 
 	end
 end
 
-project!(t, i, e::Equality{T, D}, x::AbstractArray{T}) where {D, T} = (for j=i:i+D-1 @inbounds t[j] = e.v[j] end)
+project!(t, i, e::Equality{T, D}, x::AbstractArray{T}) where {D, T} = (for j=i:i+D-1 t[j] = e.v[j] end)
+
+function project!(t, i, b::Ball{T,D}, x::AbstractArray{T}) where {T,D}
+	xnorm = norm(@~ x[i:i+D-1])
+	@.. t[i:i+D-1] .= x[i:i+D-1] .* b.r/max(b.r, xnorm)
+end
 
 function project!(t, i, c::SOCone{T, D}, x::AbstractArray{T}) where {T, D}
 	angle = c.angle
 	xnorm = norm(@~ x[i .+ (1:(D-1))])
 	r = x[i]
 	if xnorm <= angle * r 
-		@inbounds @.. t[i:i+D-1] .= x[i:i+D-1]
+	 @.. t[i:i+D-1] .= x[i:i+D-1]
 	elseif xnorm <= -r/angle
-		@inbounds @.. t[i:i+D-1] .= zero(T)
+	 @.. t[i:i+D-1] .= zero(T)
 	else
 		scalefact = (angle * xnorm + r)/(angle * angle + one(T))
 		component_factor = angle * (scalefact)/xnorm
-		@inbounds t[i] = scalefact
-		@inbounds @.. t[i+1:i+D-1] .= component_factor .* x[i+1:i+D-1]
+	 t[i] = scalefact
+	 @.. t[i+1:i+D-1] .= component_factor .* x[i+1:i+D-1]
 	end
 end
 
@@ -55,15 +60,15 @@ end
 		xnorm = indexednorm(x, i, $vect_inds)
 		r = -x[i]
 		if xnorm <= angle * r
-			@inbounds (t[i:i+$D-1]) .= x[i:i+$D-1]
+		 (t[i:i+$D-1]) .= x[i:i+$D-1]
 		elseif xnorm <= -r/angle
-			@inbounds (t[i:i+$D-1]) .= zero(T)
+		 (t[i:i+$D-1]) .= zero(T)
 		else 
 			scalefact = (angle * xnorm + r)/(angle * angle + $onev)
 			component_factor = angle * (scalefact)/xnorm
-			@inbounds t[i] = -scalefact
+		 t[i] = -scalefact
 			for j = i+1:i+$D-1
-				@inbounds t[j] = component_factor * x[j]
+			 t[j] = component_factor * x[j]
 			end
 		end
 	end

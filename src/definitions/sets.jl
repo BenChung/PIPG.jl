@@ -13,6 +13,9 @@ struct Equality{T, D} <: Space{T, D}
     	return new{T,D}(x)
     end
 end
+struct Ball{T, D} <: Space{T, D}
+	r::T
+end
 struct PTSpace{T, Cs<:Tuple{Vararg{C where C<:Space{T}}}, D} <: Space{T, D}
 	cones::Cs
 	@generated PTSpace{T}(cs::Cs) where {T, Cs <: Tuple{Vararg{C where C<:Space{T}}}} = Expr(:new, PTSpace{T, Cs, sum(dim.(Cs.parameters); init=0)}, :(cs))
@@ -25,8 +28,6 @@ struct Product{T, D1, D2, D3, S1 <: Space{T, D1}, S2 <: Space{T, D2}} <: Space{T
 end
 abstract type Cone{T, D} <: Space{T, D} end
 
-
-abstract type Cone{T, D} <: Space{T, D} end
 struct Polar{T, D, C<:Cone{T, D}} <: Cone{T, D}
 	inner::C 
 end
@@ -94,6 +95,7 @@ copy(s::PTCone{T,Cs,D}) where {T,Cs,D} = PTCone{T}(copy.(s.cones))
 copy(c::Union{Reals, Zeros, SignCone}) = c
 copy(s::HalfspaceCone{T,D}) where {T,D} = HalfspaceCone{T,D}(s.d, s.o)
 copy(s::SOCone{T,D}) where {T,D} = SOCone{T,D}(s.angle)
+copy(b::Ball{T,D}) where {T,D} = b
 copy(pc::PermutedCone{T, D, P}) where {T, D, P} = PermutedCone{T,D,P}(copy(pc.cone), pc.permutation)
 copy(pc::PermutedSpace{T, D, P}) where {T, D, P} = PermutedSpace{T,D,P}(copy(pc.cone), pc.permutation)
 

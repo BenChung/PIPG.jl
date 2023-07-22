@@ -41,13 +41,14 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
 	membership::Dict{MOI.ConstraintIndex, Membership}
 	nstages::Union{Nothing, Int}
 	specialized::Union{Nothing, SpecializedOptimizer}
+	diag::Diagnostics
 	preconditioner::Preconditioner
 
 	niters::Int
 	ϵ::Float64
 	γ::Float64
-	function Optimizer(; niters=1000000, ϵ=1e-6, γ=0.9, preconditioner=Ruiz())
-		return new("", nothing, nothing, false, 0.0, false, Dict{MOI.ConstraintIndex, Membership}(), nothing, nothing, preconditioner, niters, ϵ, γ)
+	function Optimizer(; niters=10000000, ϵ=1e-6, γ=0.9, preconditioner=Ruiz(), diag=NoDiagnostics{Float64}())
+		return new("", nothing, nothing, false, 0.0, false, Dict{MOI.ConstraintIndex, Membership}(), nothing, nothing, diag, preconditioner, niters, ϵ, γ)
 	end
 end
 
@@ -276,7 +277,7 @@ function build_problem(
 	end
 
     p = Problem(k, d, H, P, q, g, objective_constant)
-	s = PIPG.State(p, PIPG.xPIPG(dest.ϵ, dest.γ; iters=dest.niters); preconditioner=dest.preconditioner)
+	s = PIPG.State(p, PIPG.xPIPG(dest.ϵ, dest.γ; iters=dest.niters); preconditioner=dest.preconditioner, diag=dest.diag)
 
 	dest.specialized = SpecializedOptimizer(dest.name, p, s, nothing, Ab.sets, dest.silent, dest.elapsed_time, max_sense)
 	dest.max_sense = max_sense

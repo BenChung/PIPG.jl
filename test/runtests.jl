@@ -79,6 +79,12 @@ using Test
     result = [-7.744562646538029, -2.696310623822791, 2.696310623822791, -6.740776559556978][perm]
     PIPG.project!(res, 1, cone, arg)
     @test res ≈ result
+
+    cone = PIPG.Ball{Float64, 3}(1.0)
+    res = zeros(3)
+    arg = [3.0,0,0]
+    PIPG.project!(res, 1, cone, arg)
+    @test res ≈ [1.0,0.0,0.0]
 end
 
 
