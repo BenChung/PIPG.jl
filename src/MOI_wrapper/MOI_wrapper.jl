@@ -47,8 +47,11 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
 	niters::Int
 	ϵ::Float64
 	γ::Float64
-	function Optimizer(; niters=10000000, ϵ=1e-6, γ=0.9, preconditioner=Ruiz(), diag=NoDiagnostics{Float64}())
-		return new("", nothing, nothing, false, 0.0, false, Dict{MOI.ConstraintIndex, Membership}(), nothing, nothing, diag, preconditioner, niters, ϵ, γ)
+	ω::Float64
+	ρ::Float64
+
+	function Optimizer(; niters=10000000, ϵ=1e-6, ρ=1.5, γ=0.9, ω=2.0, preconditioner=Ruiz(), diag=NoDiagnostics{Float64}())
+		return new("", nothing, nothing, false, 0.0, false, Dict{MOI.ConstraintIndex, Membership}(), nothing, nothing, diag, preconditioner, niters, ϵ, γ, ω, ρ)
 	end
 end
 
@@ -264,19 +267,8 @@ function build_problem(
 		S = ones(A.n)
 	end
 
-	col_perm = 1:A.n
-	row_perm = 1:A.m
-	if !isnothing(dest.nstages)
-		row_perm, col_perm = sort_matrix(H, dest.nstages)
-		H = H[row_perm, col_perm]
-		P = P[col_perm, col_perm]
-		k = PermutedCone(k, row_perm)
-		d = PermutedSpace(d, col_perm)
-		q = q[col_perm]
-		g = g[row_perm]
-	end
-
     p = Problem(k, d, H, P, q, g, objective_constant)
+	println(p)
 	s = PIPG.State(p, PIPG.xPIPG(dest.ϵ, dest.γ; iters=dest.niters); preconditioner=dest.preconditioner, diag=dest.diag)
 
 	dest.specialized = SpecializedOptimizer(dest.name, p, s, nothing, Ab.sets, dest.silent, dest.elapsed_time, max_sense)
@@ -493,6 +485,16 @@ function MOI.get(model::Optimizer, ::SetMembership, c::MOI.ConstraintIndex)
 	return model.membership[c]
 end
 
-struct NStages <: MOI.AbstractModelAttribute end 
-MOI.set(model::Optimizer, ::NStages, n::Integer) = model.stages = n
-MOI.get(model::Optimizer, ::NStages) = model.stages
+function MOI.set(model::Optimizer, attr::MOI.RawOptimizerAttribute, value)
+	if attr.name == "preconditioner"
+		model.preconditioner = value
+	elseif attr.name == "ω"
+		model.ω = value
+	elseif attr.name == "ρ"
+		model.ρ = value
+	elseif attr.name == "γ"
+		model.γ = value
+	else
+		error("Attribute $(attr.name) not supported by PIPG.jl")
+	end
+end
