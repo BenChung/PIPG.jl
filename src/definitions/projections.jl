@@ -60,13 +60,17 @@ end
 		xnorm = indexednorm(x, i, $vect_inds)
 		r = -x[i]
 		if xnorm <= angle * r
-		 (t[i:i+$D-1]) .= x[i:i+$D-1]
+			for j=i:i+D-1
+				t[j] = x[j]
+			end	
 		elseif xnorm <= -r/angle
-		 (t[i:i+$D-1]) .= zero(T)
+			for j=i:i+D-1
+				t[j] = zero(T)
+			end	
 		else 
 			scalefact = (angle * xnorm + r)/(angle * angle + $onev)
 			component_factor = angle * (scalefact)/xnorm
-		 t[i] = -scalefact
+		 	t[i] = -scalefact
 			for j = i+1:i+$D-1
 			 t[j] = component_factor * x[j]
 			end
