@@ -99,6 +99,17 @@ copy(b::Ball{T,D}) where {T,D} = b
 copy(pc::PermutedCone{T, D, P}) where {T, D, P} = PermutedCone{T,D,P}(copy(pc.cone), pc.permutation)
 copy(pc::PermutedSpace{T, D, P}) where {T, D, P} = PermutedSpace{T,D,P}(copy(pc.cone), pc.permutation)
 
+copy_to!(t::InfBound{T,D},s::InfBound{T,D}) where {T,D} = t.δ .= s.δ
+copy_to!(t::Equality{T,D}, s::Equality{T,D}) where {T,D} = s.v .= t.v
+copy_to!(t::PTSpace{T,Cs,D}, s::PTSpace{T,Cs,D}) where {T,Cs,D} = copy_to!.(t.cones, s.cones)
+copy_to!(t::PTCone{T,Cs,D}, s::PTCone{T,Cs,D}) where {T,Cs,D} = copy_to!.(t.cones, s.cones)
+copy_to!(_::Union{Reals, Zeros, SignCone}, _::Union{Reals, Zeros, SignCone}) = nothing
+copy_to!(t::HalfspaceCone{T,D}, s::HalfspaceCone{T,D}) where {T,D} = begin t.d .= s.d; t.o = s.o; t.d_norm2 = s.d_norm2 end
+copy_to!(t::SOCone{T,D}, s::SOCone{T,D}) where {T,D} = t.angle = s.angle
+copy_to!(t::Ball{T,D}, b::Ball{T,D}) where {T,D} = t.r = s.r
+copy_to!(tc::PermutedCone{T,D,P}, pc::PermutedCone{T, D, P}) where {T, D, P} = begin tc.permutation .= pc.permutation; copy_to!(tc.cone, pc.cone) end
+copy_to!(tc::PermutedCone{T,D,P}, pc::PermutedSpace{T, D, P}) where {T, D, P} = begin tc.permutation .= pc.permutation; copy_to!(tc.cone, pc.cone) end
+
 dim(::Space{T,D}) where {T,D} = D
 dim(::Type{T}) where {D, Tc, T<:Space{Tc,D}} = D
 cone_dim(::Cone{T,D}) where {T,D} = D
@@ -124,6 +135,20 @@ function variables(r::Union{PTCone{T, Cs}, PTSpace{T, Cs}}, cone_index, offs::In
     vars = []
     for cone in r.cones 
         append!(vars, variables(cone, cone_index, offs))
+        cone_index += 1
+        offs += dim(cone)
+    end
+    return vars
+end
+
+
+set_ranges(s::Space) = set_ranges(s, 1, 1)
+set_ranges(r::Space{T, D}, cone_index, offs::Int) where {T, D} = [r => (offs:offs+D-1)]
+set_ranges(p::PermutedCone) = throw("Cannot introspect on the set_ranges of a permuted cone.")
+function set_ranges(r::Union{PTCone{T, Cs}, PTSpace{T, Cs}}, cone_index, offs::Int) where {T, Cs} 
+    vars = []
+    for cone in r.cones 
+        append!(vars, set_ranges(cone, cone_index, offs))
         cone_index += 1
         offs += dim(cone)
     end

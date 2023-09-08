@@ -66,7 +66,7 @@ function precondition!(src::Problem, tgt::Problem, pc::RuizState{T}) where T
 	# ... compute scalings ...
 	scale_cone!(tgt.k, src.k, pc.row_scale, 0)
 	scale_cone!(tgt.d, src.d, pc.col_scale, 0)
-	nonzeros(tgt.H) .= nonzeros(src.H)
+	tgt.H .= src.H
 	row_scale(tgt, src, pc.row_scale)
 	col_scale(tgt, src, pc.col_scale)
 end

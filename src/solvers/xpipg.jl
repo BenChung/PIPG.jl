@@ -61,7 +61,7 @@ function norm_err(a::Vector{T}, b::Vector{T}) where T
 	@assert length(a) == length(b)
 	result = zero(T)
 	for i=1:length(a)
-		@inbounds result += (a[i] - b[i])^2
+		result += (a[i] - b[i])^2
 	end
 	return sqrt(result)
 end

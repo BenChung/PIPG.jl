@@ -6,12 +6,18 @@ version = "0.1.0"
 [deps]
 DataStructures = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
 FastBroadcast = "7034ab61-46d4-4ed7-9d0f-46aef9175898"
-KaHyPar = "2a6221f6-aa48-11e9-3542-2d9e0ef01880"
 LazyArrays = "5078a376-72f3-5289-bfd5-ec5146d43c02"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 MathOptInterface = "b8f27783-ece8-5eb3-8dc8-9495eed66fee"
+Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+
+[weakdeps]
+KaHyPar = "2a6221f6-aa48-11e9-3542-2d9e0ef01880"
+
+[extensions]
+MatrixSorting = "KaHyPar"
 
 [compat]
 julia = "1"

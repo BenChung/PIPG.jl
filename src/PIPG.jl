@@ -3,7 +3,6 @@ using StaticArrays
 using SparseArrays
 using LinearAlgebra
 using LazyArrays
-using KaHyPar
 using DataStructures
 using FastBroadcast
 import Base: copy
@@ -17,9 +16,10 @@ include("definitions/projections.jl")
 include("problem_parsing/coloring.jl")
 include("preconditioning/preconditioning.jl")
 include("preconditioning/chained.jl")
-include("preconditioning/sorting.jl")
 include("preconditioning/ruiz.jl")
 include("preconditioning/column_normalization.jl")
+include("preconditioning/cholesky.jl")
+include("preconditioning/qr.jl")
 include("diagnostics.jl")
 include("solvers/solver.jl")
 include("solvers/xpipg.jl")

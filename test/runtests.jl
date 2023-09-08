@@ -528,6 +528,19 @@ end
     @test norm(MOI.get.(model, MOI.VariablePrimal(), x)  .- [42.881, 25.706]) < 0.01
 end
 
+@testset "Pseudo-cholesky preconditioner" begin 
+    function make_qp()
+    	P_ex = spdiagm([1/MathConstants.e, 2.0])
+    	q = [1/MathConstants.e,2.0]
+    	H_ex = sparse([-1.0 -1.0])
+    	g = [0.0]
+    	return PIPG.Problem(PIPG.SignCone{Float64, 1}(false), PIPG.Reals{Float64, 2}(), H_ex, P_ex, q, g, 0.0)
+    end
+	
+
+
+end
+
 @testset "Trivial QP" begin
     opt = PIPG.Optimizer()
     model = MOI.Bridges.full_bridge_optimizer(
